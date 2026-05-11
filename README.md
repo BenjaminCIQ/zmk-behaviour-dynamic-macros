@@ -73,7 +73,7 @@ manifest:
     # ... other projects
     - name: zmk-dynamic-macros
       path: modules/zmk/dynamic-macros
-      url: https://github.com/BenjaminCIQ/zmk_module_dynamic_makros
+      url: https://github.com/BenjaminCIQ/dynamic_macros
       revision: main
 ```
 
