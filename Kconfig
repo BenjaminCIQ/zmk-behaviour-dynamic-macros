@@ -1,0 +1,34 @@
+DT_COMPAT_ZMK_BEHAVIOR_DYNAMIC_MACRO := zmk,behavior-dynamic-macro
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO
+    bool
+    default $(dt_compat_enabled,$(DT_COMPAT_ZMK_BEHAVIOR_DYNAMIC_MACRO))
+
+if ZMK_BEHAVIOR_DYNAMIC_MACRO
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_MAX_SLOTS
+    int "Maximum number of dynamic macro slots"
+    default 16
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_MAX_EVENTS
+    int "Maximum number of events per macro slot (press + release = 2 events)"
+    default 32
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_TAP_DELAY
+    int "Delay in ms between each event during playback"
+    default 30
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT
+    int "Timeout in ms before pending assign/delete auto-cancels"
+    default 10000
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_PERSIST
+    bool "Persist macros to NVS flash across reboots"
+    default y
+    depends on SETTINGS
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK
+    bool "Type feedback messages for state transitions"
+    default y
+
+endif

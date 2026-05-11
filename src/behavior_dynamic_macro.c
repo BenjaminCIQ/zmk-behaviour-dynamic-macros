@@ -1,0 +1,753 @@
+/*
+ * Copyright (c) 2026 The ZMK Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+#define DT_DRV_COMPAT zmk_behavior_dynamic_macro
+
+#include <zephyr/device.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/kernel.h>
+#include <drivers/behavior.h>
+#include <zmk/behavior.h>
+#include <zmk/events/keycode_state_changed.h>
+#include <zmk/keymap.h>
+#include <dt-bindings/zmk/dynamic_macros.h>
+
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_PERSIST)
+#include <zephyr/settings/settings.h>
+#endif
+
+LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+
+#if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
+
+/* -------------------------------------------------------------------------- */
+/*  Constants and types                                                       */
+/* -------------------------------------------------------------------------- */
+
+#define MAX_SLOTS  CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_MAX_SLOTS
+#define MAX_EVENTS CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_MAX_EVENTS
+#define TAP_DELAY  CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_TAP_DELAY
+
+enum dm_state {
+    DM_STATE_IDLE = 0,
+    DM_STATE_RECORDING,
+    DM_STATE_PENDING_ASSIGN,
+    DM_STATE_DELETE_PENDING,
+    DM_STATE_PLAYING,
+    DM_STATE_TYPING_FEEDBACK,
+};
+
+struct dm_event {
+    uint16_t usage_page;
+    uint32_t keycode;
+    uint8_t implicit_mods;
+    uint8_t explicit_mods;
+    bool pressed;
+};
+
+struct dm_slot {
+    uint32_t event_count;
+    struct dm_event events[MAX_EVENTS];
+};
+
+struct dm_data {
+    enum dm_state state;
+    struct dm_slot slots[MAX_SLOTS];
+    struct dm_slot recording_buffer;
+    struct k_work_delayable assign_timeout_work;
+    int playback_slot;
+    uint32_t playback_event;
+};
+
+static struct dm_data dm;
+
+/* -------------------------------------------------------------------------- */
+/*  Feedback: text output via simulated keystrokes                            */
+/* -------------------------------------------------------------------------- */
+
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK)
+
+static bool suppress_recording = false;
+
+struct hid_keycode {
+    uint8_t keycode;
+    bool shift;
+};
+
+static struct hid_keycode ascii_to_hid(char c) {
+    if (c >= 'a' && c <= 'z') {
+        return (struct hid_keycode){.keycode = 0x04 + (c - 'a'), .shift = false};
+    }
+    if (c >= 'A' && c <= 'Z') {
+        return (struct hid_keycode){.keycode = 0x04 + (c - 'A'), .shift = true};
+    }
+    if (c >= '1' && c <= '9') {
+        return (struct hid_keycode){.keycode = 0x1E + (c - '1'), .shift = false};
+    }
+    if (c == '0') {
+        return (struct hid_keycode){.keycode = 0x27, .shift = false};
+    }
+    switch (c) {
+    case ' ':
+        return (struct hid_keycode){.keycode = 0x2C, .shift = false};
+    case '\n':
+        return (struct hid_keycode){.keycode = 0x28, .shift = false};
+    case '[':
+        return (struct hid_keycode){.keycode = 0x2F, .shift = false};
+    case ']':
+        return (struct hid_keycode){.keycode = 0x30, .shift = false};
+    case '\'':
+        return (struct hid_keycode){.keycode = 0x34, .shift = false};
+    case ':':
+        return (struct hid_keycode){.keycode = 0x33, .shift = true};
+    case '+':
+        return (struct hid_keycode){.keycode = 0x2E, .shift = true};
+    case '-':
+        return (struct hid_keycode){.keycode = 0x2D, .shift = false};
+    case '.':
+        return (struct hid_keycode){.keycode = 0x37, .shift = false};
+    case ',':
+        return (struct hid_keycode){.keycode = 0x36, .shift = false};
+    case '?':
+        return (struct hid_keycode){.keycode = 0x38, .shift = true};
+    case '!':
+        return (struct hid_keycode){.keycode = 0x1E, .shift = true};
+    default:
+        return (struct hid_keycode){.keycode = 0x38, .shift = true}; /* '?' for unknown */
+    }
+}
+
+static void type_char(char c) {
+    struct hid_keycode hk = ascii_to_hid(c);
+    uint8_t mods = hk.shift ? 0x02 : 0x00; /* LSHIFT */
+
+    struct zmk_keycode_state_changed press = {
+        .usage_page = 0x07,
+        .keycode = hk.keycode,
+        .implicit_mods = mods,
+        .explicit_mods = 0,
+        .state = true,
+        .timestamp = k_uptime_get(),
+    };
+    raise_zmk_keycode_state_changed(press);
+
+    struct zmk_keycode_state_changed release = press;
+    release.state = false;
+    release.timestamp = k_uptime_get();
+    raise_zmk_keycode_state_changed(release);
+}
+
+static void type_string(const char *str) {
+    suppress_recording = true;
+    for (const char *p = str; *p; p++) {
+        type_char(*p);
+        k_msleep(TAP_DELAY);
+    }
+    suppress_recording = false;
+}
+
+static void type_number(int n) {
+    char buf[8];
+    int len = 0;
+    if (n == 0) {
+        type_char('0');
+        return;
+    }
+    while (n > 0 && len < (int)sizeof(buf)) {
+        buf[len++] = '0' + (n % 10);
+        n /= 10;
+    }
+    suppress_recording = true;
+    for (int i = len - 1; i >= 0; i--) {
+        type_char(buf[i]);
+        k_msleep(TAP_DELAY);
+    }
+    suppress_recording = false;
+}
+
+/* Non-printable key names (keys that can't be replayed for display) */
+
+static bool is_modifier_keycode(uint32_t keycode) {
+    return keycode >= 0xE0 && keycode <= 0xE7;
+}
+
+static const char *modifier_name(uint32_t keycode) {
+    static const char *names[] = {"LCTL", "LSFT", "LALT", "LGUI",
+                                  "RCTL", "RSFT", "RALT", "RGUI"};
+    if (keycode >= 0xE0 && keycode <= 0xE7) {
+        return names[keycode - 0xE0];
+    }
+    return "??";
+}
+
+static bool is_non_printable(uint16_t usage_page, uint32_t keycode) {
+    if (usage_page != 0x07) {
+        return true;
+    }
+    if (keycode == 0x28) return true; /* ENTER */
+    if (keycode == 0x29) return true; /* ESC */
+    if (keycode == 0x2A) return true; /* BSPC */
+    if (keycode == 0x2B) return true; /* TAB */
+    if (keycode == 0x2C) return true; /* SPACE */
+    if (keycode == 0x39) return true; /* CAPS */
+    if (keycode >= 0x3A && keycode <= 0x45) return true; /* F1-F12 */
+    if (keycode == 0x46) return true; /* PSCRN */
+    if (keycode == 0x47) return true; /* SLCK */
+    if (keycode == 0x48) return true; /* PAUSE */
+    if (keycode == 0x49) return true; /* INS */
+    if (keycode == 0x4A) return true; /* HOME */
+    if (keycode == 0x4B) return true; /* PGUP */
+    if (keycode == 0x4C) return true; /* DEL */
+    if (keycode == 0x4D) return true; /* END */
+    if (keycode == 0x4E) return true; /* PGDN */
+    if (keycode == 0x4F) return true; /* RIGHT */
+    if (keycode == 0x50) return true; /* LEFT */
+    if (keycode == 0x51) return true; /* DOWN */
+    if (keycode == 0x52) return true; /* UP */
+    if (is_modifier_keycode(keycode)) return true;
+    return false;
+}
+
+static const char *non_printable_name(uint16_t usage_page, uint32_t keycode) {
+    if (usage_page != 0x07) {
+        return "MEDIA";
+    }
+    switch (keycode) {
+    case 0x28: return "RET";
+    case 0x29: return "ESC";
+    case 0x2A: return "BSPC";
+    case 0x2B: return "TAB";
+    case 0x2C: return "SPC";
+    case 0x39: return "CAPS";
+    case 0x3A: return "F1";
+    case 0x3B: return "F2";
+    case 0x3C: return "F3";
+    case 0x3D: return "F4";
+    case 0x3E: return "F5";
+    case 0x3F: return "F6";
+    case 0x40: return "F7";
+    case 0x41: return "F8";
+    case 0x42: return "F9";
+    case 0x43: return "F10";
+    case 0x44: return "F11";
+    case 0x45: return "F12";
+    case 0x46: return "PSCRN";
+    case 0x47: return "SLCK";
+    case 0x48: return "PAUSE";
+    case 0x49: return "INS";
+    case 0x4A: return "HOME";
+    case 0x4B: return "PGUP";
+    case 0x4C: return "DEL";
+    case 0x4D: return "END";
+    case 0x4E: return "PGDN";
+    case 0x4F: return "RIGHT";
+    case 0x50: return "LEFT";
+    case 0x51: return "DOWN";
+    case 0x52: return "UP";
+    default:   return "??";
+    }
+}
+
+static void replay_keycode_for_display(const struct dm_event *ev) {
+    suppress_recording = true;
+    struct zmk_keycode_state_changed press = {
+        .usage_page = ev->usage_page,
+        .keycode = ev->keycode,
+        .implicit_mods = ev->implicit_mods,
+        .explicit_mods = ev->explicit_mods,
+        .state = true,
+        .timestamp = k_uptime_get(),
+    };
+    raise_zmk_keycode_state_changed(press);
+    k_msleep(TAP_DELAY);
+
+    struct zmk_keycode_state_changed release = press;
+    release.state = false;
+    release.timestamp = k_uptime_get();
+    raise_zmk_keycode_state_changed(release);
+    suppress_recording = false;
+}
+
+static void type_modifier_prefix(uint8_t active_mods) {
+    static const uint8_t mod_bits[] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
+    static const char *mod_names[] = {"LCTL", "LSFT", "LALT", "LGUI",
+                                      "RCTL", "RSFT", "RALT", "RGUI"};
+    bool first = true;
+    for (int i = 0; i < 8; i++) {
+        if (active_mods & mod_bits[i]) {
+            if (!first) {
+                type_char('+');
+                k_msleep(TAP_DELAY);
+            }
+            type_string(mod_names[i]);
+            first = false;
+        }
+    }
+    if (!first) {
+        type_char('+');
+        k_msleep(TAP_DELAY);
+    }
+}
+
+static void type_slot_contents(const struct dm_slot *slot) {
+    uint8_t active_mods = 0;
+
+    for (uint32_t i = 0; i < slot->event_count; i++) {
+        const struct dm_event *ev = &slot->events[i];
+
+        if (ev->usage_page == 0x07 && is_modifier_keycode(ev->keycode)) {
+            uint8_t mod_bit = 1 << (ev->keycode - 0xE0);
+            if (ev->pressed) {
+                active_mods |= mod_bit;
+            } else {
+                active_mods &= ~mod_bit;
+            }
+            continue;
+        }
+
+        if (!ev->pressed) {
+            continue;
+        }
+
+        if (active_mods) {
+            type_modifier_prefix(active_mods);
+        }
+
+        if (is_non_printable(ev->usage_page, ev->keycode)) {
+            type_string(non_printable_name(ev->usage_page, ev->keycode));
+        } else {
+            replay_keycode_for_display(ev);
+        }
+        type_char(' ');
+        k_msleep(TAP_DELAY);
+    }
+}
+
+static void feedback_rec(void) {
+    type_string("[DM REC]");
+}
+
+static void feedback_stop(void) {
+    type_string("[DM STOP]");
+}
+
+static void feedback_saved(int slot_idx, const struct dm_slot *slot) {
+    type_string("[DM SAVED ");
+    type_number(slot_idx);
+    type_string(": '");
+    type_slot_contents(slot);
+    type_string("']");
+}
+
+static void feedback_slot_full(int slot_idx) {
+    type_string("[DM SLOT ");
+    type_number(slot_idx);
+    type_string(" FULL]");
+}
+
+static void feedback_deleted(int slot_idx) {
+    type_string("[DM DEL ");
+    type_number(slot_idx);
+    type_string("]");
+}
+
+static void feedback_slot_empty(int slot_idx) {
+    type_string("[DM SLOT ");
+    type_number(slot_idx);
+    type_string(" EMPTY]");
+}
+
+static void feedback_overflow(void) {
+    type_string("[DM ERR: OVERFLOW]");
+}
+
+static void feedback_status(void) {
+    type_string("[DM STATUS]\n");
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        type_string("Slot ");
+        type_number(i);
+        type_string(": ");
+        if (dm.slots[i].event_count == 0) {
+            type_string("empty");
+        } else {
+            type_string("'");
+            type_slot_contents(&dm.slots[i]);
+            type_string("' ");
+            type_char('(');
+            k_msleep(TAP_DELAY);
+            type_number(dm.slots[i].event_count);
+            type_string(" events)");
+        }
+        type_char('\n');
+        k_msleep(TAP_DELAY);
+    }
+}
+
+#else /* !CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK */
+
+static bool suppress_recording = false;
+static void feedback_rec(void) {}
+static void feedback_stop(void) {}
+static void feedback_saved(int slot_idx, const struct dm_slot *slot) {}
+static void feedback_slot_full(int slot_idx) {}
+static void feedback_deleted(int slot_idx) {}
+static void feedback_slot_empty(int slot_idx) {}
+static void feedback_overflow(void) {}
+static void feedback_status(void) {}
+
+#endif /* CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK */
+
+/* -------------------------------------------------------------------------- */
+/*  NVS Persistence                                                           */
+/* -------------------------------------------------------------------------- */
+
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_PERSIST)
+
+static int dm_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
+    if (len < sizeof(int)) {
+        return -EINVAL;
+    }
+
+    int slot_idx = -1;
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        char key[12];
+        snprintf(key, sizeof(key), "slot/%d", i);
+        if (strcmp(name, key) == 0) {
+            slot_idx = i;
+            break;
+        }
+    }
+
+    if (slot_idx < 0) {
+        return -ENOENT;
+    }
+
+    struct dm_slot tmp;
+    int rc = read_cb(cb_arg, &tmp, sizeof(tmp));
+    if (rc < (int)sizeof(tmp.event_count)) {
+        return -EINVAL;
+    }
+
+    if (tmp.event_count > MAX_EVENTS) {
+        tmp.event_count = MAX_EVENTS;
+    }
+
+    memcpy(&dm.slots[slot_idx], &tmp, sizeof(struct dm_slot));
+    LOG_DBG("Loaded dynamic macro slot %d with %d events", slot_idx, tmp.event_count);
+    return 0;
+}
+
+static int dm_settings_commit(void) {
+    return 0;
+}
+
+static int dm_settings_export(int (*storage_func)(const char *name, const void *value,
+                                                   size_t val_len)) {
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        if (dm.slots[i].event_count > 0) {
+            char key[16];
+            snprintf(key, sizeof(key), "dm/slot/%d", i);
+            size_t data_size = sizeof(uint32_t) +
+                               dm.slots[i].event_count * sizeof(struct dm_event);
+            storage_func(key, &dm.slots[i], data_size);
+        }
+    }
+    return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(dm, "dm", NULL, dm_settings_set, dm_settings_commit,
+                               dm_settings_export);
+
+static void save_slot(int slot_idx) {
+    char key[16];
+    snprintf(key, sizeof(key), "dm/slot/%d", slot_idx);
+    size_t data_size = sizeof(uint32_t) +
+                       dm.slots[slot_idx].event_count * sizeof(struct dm_event);
+    settings_save_one(key, &dm.slots[slot_idx], data_size);
+    LOG_DBG("Saved dynamic macro slot %d (%d events)", slot_idx,
+            dm.slots[slot_idx].event_count);
+}
+
+static void delete_slot_from_storage(int slot_idx) {
+    char key[16];
+    snprintf(key, sizeof(key), "dm/slot/%d", slot_idx);
+    settings_delete(key);
+    LOG_DBG("Deleted dynamic macro slot %d from storage", slot_idx);
+}
+
+#else /* !CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_PERSIST */
+
+static void save_slot(int slot_idx) {}
+static void delete_slot_from_storage(int slot_idx) {}
+
+#endif /* CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_PERSIST */
+
+/* -------------------------------------------------------------------------- */
+/*  Playback timer                                                            */
+/* -------------------------------------------------------------------------- */
+
+static struct k_timer playback_timer;
+static struct k_work playback_work;
+
+static void playback_work_handler(struct k_work *work) {
+    if (dm.state != DM_STATE_PLAYING || dm.playback_slot < 0) {
+        return;
+    }
+
+    struct dm_slot *slot = &dm.slots[dm.playback_slot];
+    if (dm.playback_event >= slot->event_count) {
+        dm.state = DM_STATE_IDLE;
+        dm.playback_slot = -1;
+        k_timer_stop(&playback_timer);
+        return;
+    }
+
+    const struct dm_event *ev = &slot->events[dm.playback_event++];
+
+    struct zmk_keycode_state_changed kc = {
+        .usage_page = ev->usage_page,
+        .keycode = ev->keycode,
+        .implicit_mods = ev->implicit_mods,
+        .explicit_mods = ev->explicit_mods,
+        .state = ev->pressed,
+        .timestamp = k_uptime_get(),
+    };
+
+    suppress_recording = true;
+    raise_zmk_keycode_state_changed(kc);
+    suppress_recording = false;
+
+    if (dm.playback_event >= slot->event_count) {
+        dm.state = DM_STATE_IDLE;
+        dm.playback_slot = -1;
+        k_timer_stop(&playback_timer);
+    }
+}
+
+static void playback_timer_handler(struct k_timer *timer) {
+    k_work_submit(&playback_work);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Assign/delete timeout                                                     */
+/* -------------------------------------------------------------------------- */
+
+static void assign_timeout_handler(struct k_work *work) {
+    if (dm.state == DM_STATE_PENDING_ASSIGN || dm.state == DM_STATE_DELETE_PENDING) {
+        LOG_DBG("Dynamic macro assign/delete timed out");
+        dm.state = DM_STATE_IDLE;
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Command handlers                                                          */
+/* -------------------------------------------------------------------------- */
+
+static void cmd_record(void) {
+    if (dm.state == DM_STATE_PLAYING || dm.state == DM_STATE_TYPING_FEEDBACK) {
+        return;
+    }
+
+    dm.recording_buffer.event_count = 0;
+    dm.state = DM_STATE_RECORDING;
+    LOG_DBG("Started recording dynamic macro");
+    feedback_rec();
+}
+
+static void cmd_stop(void) {
+    if (dm.state != DM_STATE_RECORDING) {
+        return;
+    }
+
+    dm.state = DM_STATE_PENDING_ASSIGN;
+    k_work_reschedule(&dm.assign_timeout_work,
+                      K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+    LOG_DBG("Stopped recording (%d events), awaiting slot assignment",
+            dm.recording_buffer.event_count);
+    feedback_stop();
+}
+
+static void cmd_delete_mode(void) {
+    if (dm.state != DM_STATE_IDLE) {
+        return;
+    }
+
+    dm.state = DM_STATE_DELETE_PENDING;
+    k_work_reschedule(&dm.assign_timeout_work,
+                      K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+    LOG_DBG("Entered delete mode");
+}
+
+static void cmd_status(void) {
+    if (dm.state != DM_STATE_IDLE) {
+        return;
+    }
+
+    dm.state = DM_STATE_TYPING_FEEDBACK;
+    feedback_status();
+    dm.state = DM_STATE_IDLE;
+}
+
+static void cmd_slot(int slot_idx) {
+    if (slot_idx < 0 || slot_idx >= MAX_SLOTS) {
+        LOG_ERR("Invalid slot index: %d", slot_idx);
+        return;
+    }
+
+    switch (dm.state) {
+    case DM_STATE_PENDING_ASSIGN:
+        k_work_cancel_delayable(&dm.assign_timeout_work);
+        if (dm.slots[slot_idx].event_count > 0) {
+            feedback_slot_full(slot_idx);
+            /* Stay in PENDING_ASSIGN, restart timeout */
+            k_work_reschedule(&dm.assign_timeout_work,
+                              K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+            return;
+        }
+        memcpy(&dm.slots[slot_idx], &dm.recording_buffer, sizeof(struct dm_slot));
+        dm.state = DM_STATE_TYPING_FEEDBACK;
+        feedback_saved(slot_idx, &dm.slots[slot_idx]);
+        dm.state = DM_STATE_IDLE;
+        save_slot(slot_idx);
+        LOG_DBG("Assigned recording to slot %d (%d events)", slot_idx,
+                dm.slots[slot_idx].event_count);
+        break;
+
+    case DM_STATE_DELETE_PENDING:
+        k_work_cancel_delayable(&dm.assign_timeout_work);
+        if (dm.slots[slot_idx].event_count == 0) {
+            feedback_slot_empty(slot_idx);
+        } else {
+            dm.slots[slot_idx].event_count = 0;
+            feedback_deleted(slot_idx);
+            delete_slot_from_storage(slot_idx);
+        }
+        dm.state = DM_STATE_IDLE;
+        LOG_DBG("Slot %d cleared", slot_idx);
+        break;
+
+    case DM_STATE_IDLE:
+        if (dm.slots[slot_idx].event_count == 0) {
+            return;
+        }
+        dm.state = DM_STATE_PLAYING;
+        dm.playback_slot = slot_idx;
+        dm.playback_event = 0;
+        LOG_DBG("Playing slot %d (%d events)", slot_idx, dm.slots[slot_idx].event_count);
+        k_timer_start(&playback_timer, K_NO_WAIT, K_MSEC(TAP_DELAY));
+        break;
+
+    default:
+        break;
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Behavior driver API                                                       */
+/* -------------------------------------------------------------------------- */
+
+static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
+                                     struct zmk_behavior_binding_event event) {
+    switch (binding->param1) {
+    case DM_REC:
+        cmd_record();
+        return ZMK_BEHAVIOR_OPAQUE;
+    case DM_STP:
+        cmd_stop();
+        return ZMK_BEHAVIOR_OPAQUE;
+    case DM_DEL:
+        cmd_delete_mode();
+        return ZMK_BEHAVIOR_OPAQUE;
+    case DM_STATE:
+        cmd_status();
+        return ZMK_BEHAVIOR_OPAQUE;
+    case DM_SLOT:
+        cmd_slot(binding->param2);
+        return ZMK_BEHAVIOR_OPAQUE;
+    default:
+        LOG_ERR("Unknown dynamic macro command: %d", binding->param1);
+        return -ENOTSUP;
+    }
+}
+
+static int on_keymap_binding_released(struct zmk_behavior_binding *binding,
+                                      struct zmk_behavior_binding_event event) {
+    return ZMK_BEHAVIOR_OPAQUE;
+}
+
+static const struct behavior_driver_api behavior_dynamic_macro_driver_api = {
+    .binding_pressed = on_keymap_binding_pressed,
+    .binding_released = on_keymap_binding_released,
+};
+
+/* -------------------------------------------------------------------------- */
+/*  Event listener: capture keycode events during recording                   */
+/* -------------------------------------------------------------------------- */
+
+static int dm_event_listener(const zmk_event_t *eh) {
+    if (suppress_recording) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
+    if (dm.state != DM_STATE_RECORDING) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
+    const struct zmk_keycode_state_changed *ev = as_zmk_keycode_state_changed(eh);
+    if (!ev) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
+    if (dm.recording_buffer.event_count >= MAX_EVENTS) {
+        dm.state = DM_STATE_PENDING_ASSIGN;
+        k_work_reschedule(&dm.assign_timeout_work,
+                          K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+        LOG_WRN("Dynamic macro recording buffer full (%d events)", MAX_EVENTS);
+        feedback_overflow();
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
+    struct dm_event *rec = &dm.recording_buffer.events[dm.recording_buffer.event_count];
+    rec->usage_page = ev->usage_page;
+    rec->keycode = ev->keycode;
+    rec->implicit_mods = ev->implicit_mods;
+    rec->explicit_mods = ev->explicit_mods;
+    rec->pressed = ev->state;
+    dm.recording_buffer.event_count++;
+
+    LOG_DBG("Recorded event %d/%d: page=0x%02x key=0x%02x %s",
+            dm.recording_buffer.event_count, MAX_EVENTS,
+            ev->usage_page, ev->keycode, ev->state ? "press" : "release");
+
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(dynamic_macro, dm_event_listener);
+ZMK_SUBSCRIPTION(dynamic_macro, zmk_keycode_state_changed);
+
+/* -------------------------------------------------------------------------- */
+/*  Initialization                                                            */
+/* -------------------------------------------------------------------------- */
+
+static int behavior_dynamic_macro_init(const struct device *dev) {
+    memset(&dm, 0, sizeof(dm));
+    dm.state = DM_STATE_IDLE;
+    dm.playback_slot = -1;
+
+    k_work_init_delayable(&dm.assign_timeout_work, assign_timeout_handler);
+    k_work_init(&playback_work, playback_work_handler);
+    k_timer_init(&playback_timer, playback_timer_handler, NULL);
+
+    LOG_DBG("Dynamic macro behavior initialized (%d slots, %d max events)",
+            MAX_SLOTS, MAX_EVENTS);
+    return 0;
+}
+
+BEHAVIOR_DT_INST_DEFINE(0, behavior_dynamic_macro_init, NULL, NULL, NULL, POST_KERNEL,
+                        CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,
+                        &behavior_dynamic_macro_driver_api);
+
+#endif /* DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT) */
