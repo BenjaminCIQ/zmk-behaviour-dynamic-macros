@@ -127,8 +127,8 @@ static void type_char(char c) {
     struct zmk_keycode_state_changed press = {
         .usage_page = 0x07,
         .keycode = hk.keycode,
-        .implicit_mods = mods,
-        .explicit_mods = 0,
+        .implicit_modifiers = mods,
+        .explicit_modifiers = 0,
         .state = true,
         .timestamp = k_uptime_get(),
     };
@@ -256,8 +256,8 @@ static void replay_keycode_for_display(const struct dm_event *ev) {
     struct zmk_keycode_state_changed press = {
         .usage_page = ev->usage_page,
         .keycode = ev->keycode,
-        .implicit_mods = ev->implicit_mods,
-        .explicit_mods = ev->explicit_mods,
+        .implicit_modifiers = ev->implicit_mods,
+        .explicit_modifiers = ev->explicit_mods,
         .state = true,
         .timestamp = k_uptime_get(),
     };
@@ -510,8 +510,8 @@ static void playback_work_handler(struct k_work *work) {
     struct zmk_keycode_state_changed kc = {
         .usage_page = ev->usage_page,
         .keycode = ev->keycode,
-        .implicit_mods = ev->implicit_mods,
-        .explicit_mods = ev->explicit_mods,
+        .implicit_modifiers = ev->implicit_mods,
+        .explicit_modifiers = ev->explicit_mods,
         .state = ev->pressed,
         .timestamp = k_uptime_get(),
     };
@@ -713,8 +713,8 @@ static int dm_event_listener(const zmk_event_t *eh) {
     struct dm_event *rec = &dm.recording_buffer.events[dm.recording_buffer.event_count];
     rec->usage_page = ev->usage_page;
     rec->keycode = ev->keycode;
-    rec->implicit_mods = ev->implicit_mods;
-    rec->explicit_mods = ev->explicit_mods;
+    rec->implicit_mods = ev->implicit_modifiers;
+    rec->explicit_mods = ev->explicit_modifiers;
     rec->pressed = ev->state;
     dm.recording_buffer.event_count++;
 
