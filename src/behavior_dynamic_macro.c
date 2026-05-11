@@ -6,6 +6,8 @@
 
 #define DT_DRV_COMPAT zmk_behavior_dynamic_macro
 
+#include <stdio.h>
+
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/kernel.h>
@@ -629,36 +631,50 @@ static void feedback_status(void) { dm.state = DM_STATE_IDLE; }
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_PERSIST)
 
 static int dm_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
-    if (len < sizeof(int)) {
-        return -EINVAL;
-    }
-
     int slot_idx = -1;
-    for (int i = 0; i < MAX_SLOTS; i++) {
-        char key[12];
-        snprintf(key, sizeof(key), "slot/%d", i);
-        if (strcmp(name, key) == 0) {
-            slot_idx = i;
-            break;
-        }
-    }
 
-    if (slot_idx < 0) {
+    if (sscanf(name, "slot/%d", &slot_idx) != 1 || slot_idx < 0 || slot_idx >= MAX_SLOTS) {
         return -ENOENT;
     }
 
-    struct dm_slot tmp;
-    int rc = read_cb(cb_arg, &tmp, sizeof(tmp));
-    if (rc < (int)sizeof(tmp.event_count)) {
+    if (len < sizeof(uint32_t)) {
+        LOG_WRN("Slot %d: stored length %zu too small", slot_idx, len);
         return -EINVAL;
     }
 
-    if (tmp.event_count > MAX_EVENTS) {
-        tmp.event_count = MAX_EVENTS;
+    memset(&dm.slots[slot_idx], 0, sizeof(struct dm_slot));
+
+    int rc = read_cb(cb_arg, &dm.slots[slot_idx], sizeof(struct dm_slot));
+    if (rc < 0) {
+        LOG_WRN("Slot %d: read failed: %d", slot_idx, rc);
+        memset(&dm.slots[slot_idx], 0, sizeof(struct dm_slot));
+        return rc;
     }
 
-    memcpy(&dm.slots[slot_idx], &tmp, sizeof(struct dm_slot));
-    LOG_DBG("Loaded dynamic macro slot %d with %d events", slot_idx, tmp.event_count);
+    if (rc < (int)sizeof(uint32_t)) {
+        LOG_WRN("Slot %d: read returned %d bytes", slot_idx, rc);
+        memset(&dm.slots[slot_idx], 0, sizeof(struct dm_slot));
+        return -EINVAL;
+    }
+
+    if (dm.slots[slot_idx].event_count > MAX_EVENTS) {
+        LOG_WRN("Slot %d: event_count %u exceeds MAX_EVENTS", slot_idx,
+                (unsigned int)dm.slots[slot_idx].event_count);
+        memset(&dm.slots[slot_idx], 0, sizeof(struct dm_slot));
+        return -EINVAL;
+    }
+
+    size_t expected = sizeof(uint32_t) +
+                      dm.slots[slot_idx].event_count * sizeof(struct dm_event);
+    if (len < expected || rc < (int)expected) {
+        LOG_WRN("Slot %d: expected %zu bytes for %u events, got len=%zu rc=%d",
+                slot_idx, expected, (unsigned int)dm.slots[slot_idx].event_count, len, rc);
+        memset(&dm.slots[slot_idx], 0, sizeof(struct dm_slot));
+        return -EINVAL;
+    }
+
+    LOG_DBG("Loaded dynamic macro slot %d with %u events", slot_idx,
+            (unsigned int)dm.slots[slot_idx].event_count);
     return 0;
 }
 
@@ -674,7 +690,10 @@ static int dm_settings_export(int (*storage_func)(const char *name, const void *
             snprintf(key, sizeof(key), "dm/slot/%d", i);
             size_t data_size = sizeof(uint32_t) +
                                dm.slots[i].event_count * sizeof(struct dm_event);
-            storage_func(key, &dm.slots[i], data_size);
+            int rc = storage_func(key, &dm.slots[i], data_size);
+            if (rc) {
+                return rc;
+            }
         }
     }
     return 0;
@@ -688,15 +707,25 @@ static void save_slot(int slot_idx) {
     snprintf(key, sizeof(key), "dm/slot/%d", slot_idx);
     size_t data_size = sizeof(uint32_t) +
                        dm.slots[slot_idx].event_count * sizeof(struct dm_event);
-    settings_save_one(key, &dm.slots[slot_idx], data_size);
-    LOG_DBG("Saved dynamic macro slot %d (%d events)", slot_idx,
-            dm.slots[slot_idx].event_count);
+    int rc = settings_save_one(key, &dm.slots[slot_idx], data_size);
+    if (rc) {
+        LOG_ERR("Failed to save dynamic macro slot %d: %d", slot_idx, rc);
+        return;
+    }
+
+    LOG_DBG("Saved dynamic macro slot %d (%u events)", slot_idx,
+            (unsigned int)dm.slots[slot_idx].event_count);
 }
 
 static void delete_slot_from_storage(int slot_idx) {
     char key[16];
     snprintf(key, sizeof(key), "dm/slot/%d", slot_idx);
-    settings_delete(key);
+    int rc = settings_delete(key);
+    if (rc) {
+        LOG_ERR("Failed to delete dynamic macro slot %d from storage: %d", slot_idx, rc);
+        return;
+    }
+
     LOG_DBG("Deleted dynamic macro slot %d from storage", slot_idx);
 }
 
