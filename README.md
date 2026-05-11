@@ -12,6 +12,55 @@ A [ZMK](https://zmk.dev/) module that adds dynamic macro recording and playback 
 - **NVS persistence** across reboots (configurable, enabled by default)
 - **Typed feedback** for all operations (configurable, enabled by default)
 
+## Use Cases
+
+Dynamic macros record raw HID events, so a single macro can mix typed text with modifier combos, navigation, and editing commands. Each key press + release costs 2 events; the default limit is 64 events per slot (32 full key taps).
+
+### Text shortcuts
+
+| Record | Status preview | Events | Use |
+|--------|----------------|--------|-----|
+| `user@example.com` | `S0: 'user@example.com' (36)` | 36 | Fill in your email on forms |
+| `Best regards,` + Enter + `John` | `S1: 'Best regards,<RET>John' (38)` | 38 | Email sign-off |
+| `Thanks, will do!` | `S2: 'Thanks, will do!' (34)` | 34 | Quick acknowledgement |
+| `:-)` | `S3: ':-) (6)` | 6 | Emoticons
+
+### Code snippets
+
+| Record | Status preview | Events | Use |
+|--------|----------------|--------|-----|
+| `console.log();` + Left + Left | `S4: 'console.log();<LEFT><LEFT>' (34)` | 34 | JS debug print -- cursor lands between the parens |
+| `() => {}` + Left | `S5: '() => {}<LEFT>' (18)` | 18 | Arrow function skeleton |
+| `[]()` + Left + Left + Left | `S6: '[]()<LEFT><LEFT><LEFT>' (14)` | 14 | Markdown link template -- cursor in the brackets |
+
+### Editing operations
+
+| Record | Status preview | Events | Use |
+|--------|----------------|--------|-----|
+| Ctrl+A, Ctrl+C | `S7: '<LCTL+A><LCTL+C>' (8)` | 8 | Select all and copy |
+| Ctrl+S, Ctrl+W | `S8: '<LCTL+S><LCTL+W>' (8)` | 8 | Save and close tab |
+| Home, Shift+End, Ctrl+C | `S9: '<HOME><LSFT+END><LCTL+C>' (10)` | 10 | Select current line and copy |
+
+### Mixed text and actions
+
+These combine typed text with modifier combos and navigation in one recording.
+
+| Record | Status preview | Events | Use |
+|--------|----------------|--------|-----|
+| `git commit -m ""` + Left | `S10: 'git commit -m ""<LEFT>' (36)` | 36 | Git commit -- cursor between the quotes, ready to type your message |
+| Ctrl+H, then type `TODO` | `S11: '<LCTL+H>TODO' (12)` | 12 | Open find/replace pre-filled with a search term |
+| Ctrl+T, type `github.com`, Enter | `S12: '<LCTL+T>github.com<RET>' (26)` | 26 | New browser tab straight to a URL |
+
+### Creative and CAD workflows
+
+Hotkey-heavy applications like Photoshop, Blender, and CAD tools benefit from chaining multiple shortcuts into a single key.
+
+| Record | Status preview | Events | Use |
+|--------|----------------|--------|-----|
+| Ctrl+J, Ctrl+T | `S13: '<LCTL+J><LCTL+T>' (8)` | 8 | Photoshop -- duplicate layer and enter Free Transform in one tap |
+| Ctrl+Shift+N, type `Sketch1`, Enter | `S14: '<LCTL+LSFT+N>Sketch1<RET>' (20)` | 20 | CAD / Photoshop -- new layer/sketch with a preset name, skipping the dialog |
+| Ctrl+Alt+Shift+E | `S15: '<LCTL+LALT+LSFT+E>' (8)` | 8 | Photoshop -- stamp visible (flatten all layers into a new layer) |
+
 ## Setup
 
 ### 1. Add to west.yml
@@ -20,15 +69,11 @@ Add the module to your `config/west.yml` under the `projects` section:
 
 ```yaml
 manifest:
-  remotes:
-    - name: yourusername
-      url-base: https://github.com/yourusername
-    # ... other remotes
   projects:
     # ... other projects
     - name: zmk-dynamic-macros
       path: modules/zmk/dynamic-macros
-      remote: yourusername
+      url: https://github.com/BenjaminCIQ/zmk_module_dynamic_makros
       revision: main
 ```
 
@@ -138,13 +183,13 @@ Pressing **REC** while already recording restarts the recording (discards the cu
 
 ```
                     ┌──────────────┐
-          ┌────────>│     IDLE     │<────────────────────┐
-          │         └──────┬───┬──┘                      │
-          │     REC pressed│   │DEL pressed              │
-          │                v   v                         │
-          │  ┌───────────────┐ ┌──────────────┐          │
+          ┌────────>│     IDLE     │<─────────────────────┐
+          │         └──────┬───┬──┘                       │
+          │     REC pressed│   │DEL pressed               │
+          │                v   v                          │
+          │  ┌───────────────┐ ┌──────────────┐           │
           │  │  RECORDING    │ │DELETE_PENDING │──────────┤
-          │  └───────┬───────┘ └──────────────┘  slot    │
+          │  └───────┬───────┘ └──────────────┘  slot     │
           │  STOP    │              or timeout   pressed  │
           │  pressed │                                    │
           │          v                                    │
