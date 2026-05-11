@@ -64,6 +64,8 @@ struct dm_data {
 
 static struct dm_data dm;
 
+static void save_slot(int slot_idx);
+
 /* -------------------------------------------------------------------------- */
 /*  Feedback: text output via simulated keystrokes                            */
 /* -------------------------------------------------------------------------- */
@@ -72,10 +74,28 @@ static struct dm_data dm;
 
 static bool suppress_recording = false;
 
+#define FEEDBACK_BUF_LEN 512
+
 struct hid_keycode {
     uint8_t keycode;
     bool shift;
 };
+
+struct fb_event {
+    uint16_t keycode;
+    uint8_t mods;
+};
+
+static struct fb_event feedback_buf[FEEDBACK_BUF_LEN];
+static int feedback_len;
+static int feedback_pos;
+static bool feedback_press_phase;
+static enum dm_state feedback_return_state;
+static int feedback_post_save_slot;
+static bool status_mode;
+static int status_next_slot;
+static struct k_timer feedback_timer;
+static struct k_work feedback_work;
 
 static struct hid_keycode ascii_to_hid(char c) {
     if (c >= 'a' && c <= 'z') {
@@ -101,86 +121,119 @@ static struct hid_keycode ascii_to_hid(char c) {
         return (struct hid_keycode){.keycode = 0x30, .shift = false};
     case '\'':
         return (struct hid_keycode){.keycode = 0x34, .shift = false};
+    case '"':
+        return (struct hid_keycode){.keycode = 0x34, .shift = true};
     case ':':
         return (struct hid_keycode){.keycode = 0x33, .shift = true};
+    case ';':
+        return (struct hid_keycode){.keycode = 0x33, .shift = false};
     case '+':
         return (struct hid_keycode){.keycode = 0x2E, .shift = true};
+    case '=':
+        return (struct hid_keycode){.keycode = 0x2E, .shift = false};
     case '-':
         return (struct hid_keycode){.keycode = 0x2D, .shift = false};
+    case '_':
+        return (struct hid_keycode){.keycode = 0x2D, .shift = true};
     case '.':
         return (struct hid_keycode){.keycode = 0x37, .shift = false};
     case ',':
         return (struct hid_keycode){.keycode = 0x36, .shift = false};
+    case '<':
+        return (struct hid_keycode){.keycode = 0x36, .shift = true};
+    case '>':
+        return (struct hid_keycode){.keycode = 0x37, .shift = true};
+    case '/':
+        return (struct hid_keycode){.keycode = 0x38, .shift = false};
     case '?':
         return (struct hid_keycode){.keycode = 0x38, .shift = true};
     case '!':
         return (struct hid_keycode){.keycode = 0x1E, .shift = true};
+    case '@':
+        return (struct hid_keycode){.keycode = 0x1F, .shift = true};
+    case '#':
+        return (struct hid_keycode){.keycode = 0x20, .shift = true};
+    case '$':
+        return (struct hid_keycode){.keycode = 0x21, .shift = true};
+    case '%':
+        return (struct hid_keycode){.keycode = 0x22, .shift = true};
+    case '^':
+        return (struct hid_keycode){.keycode = 0x23, .shift = true};
+    case '&':
+        return (struct hid_keycode){.keycode = 0x24, .shift = true};
+    case '*':
+        return (struct hid_keycode){.keycode = 0x25, .shift = true};
+    case '(':
+        return (struct hid_keycode){.keycode = 0x26, .shift = true};
+    case ')':
+        return (struct hid_keycode){.keycode = 0x27, .shift = true};
+    case '{':
+        return (struct hid_keycode){.keycode = 0x2F, .shift = true};
+    case '}':
+        return (struct hid_keycode){.keycode = 0x30, .shift = true};
+    case '\\':
+        return (struct hid_keycode){.keycode = 0x31, .shift = false};
+    case '|':
+        return (struct hid_keycode){.keycode = 0x31, .shift = true};
+    case '`':
+        return (struct hid_keycode){.keycode = 0x35, .shift = false};
+    case '~':
+        return (struct hid_keycode){.keycode = 0x35, .shift = true};
     default:
         return (struct hid_keycode){.keycode = 0x38, .shift = true}; /* '?' for unknown */
     }
 }
 
-static void type_char(char c) {
+static void fb_reset(void) {
+    feedback_len = 0;
+    feedback_pos = 0;
+    feedback_press_phase = true;
+}
+
+static void fb_append_hid(uint32_t keycode, uint8_t mods) {
+    if (feedback_len >= FEEDBACK_BUF_LEN) {
+        LOG_WRN("Dynamic macro feedback buffer full");
+        return;
+    }
+
+    feedback_buf[feedback_len++] = (struct fb_event){
+        .keycode = (uint16_t)keycode,
+        .mods = mods,
+    };
+}
+
+static void fb_append_char(char c) {
     struct hid_keycode hk = ascii_to_hid(c);
     uint8_t mods = hk.shift ? 0x02 : 0x00; /* LSHIFT */
-
-    struct zmk_keycode_state_changed press = {
-        .usage_page = 0x07,
-        .keycode = hk.keycode,
-        .implicit_modifiers = mods,
-        .explicit_modifiers = 0,
-        .state = true,
-        .timestamp = k_uptime_get(),
-    };
-    raise_zmk_keycode_state_changed(press);
-
-    struct zmk_keycode_state_changed release = press;
-    release.state = false;
-    release.timestamp = k_uptime_get();
-    raise_zmk_keycode_state_changed(release);
+    fb_append_hid(hk.keycode, mods);
 }
 
-static void type_string(const char *str) {
-    suppress_recording = true;
+static void fb_append_str(const char *str) {
     for (const char *p = str; *p; p++) {
-        type_char(*p);
-        k_msleep(TAP_DELAY);
+        fb_append_char(*p);
     }
-    suppress_recording = false;
 }
 
-static void type_number(int n) {
+static void fb_append_number(int n) {
     char buf[8];
     int len = 0;
     if (n == 0) {
-        type_char('0');
+        fb_append_char('0');
         return;
     }
     while (n > 0 && len < (int)sizeof(buf)) {
         buf[len++] = '0' + (n % 10);
         n /= 10;
     }
-    suppress_recording = true;
     for (int i = len - 1; i >= 0; i--) {
-        type_char(buf[i]);
-        k_msleep(TAP_DELAY);
+        fb_append_char(buf[i]);
     }
-    suppress_recording = false;
 }
 
 /* Non-printable key names (keys that can't be replayed for display) */
 
 static bool is_modifier_keycode(uint32_t keycode) {
     return keycode >= 0xE0 && keycode <= 0xE7;
-}
-
-static const char *modifier_name(uint32_t keycode) {
-    static const char *names[] = {"LCTL", "LSFT", "LALT", "LGUI",
-                                  "RCTL", "RSFT", "RALT", "RGUI"};
-    if (keycode >= 0xE0 && keycode <= 0xE7) {
-        return names[keycode - 0xE0];
-    }
-    return "??";
 }
 
 static bool is_non_printable(uint16_t usage_page, uint32_t keycode) {
@@ -251,27 +304,7 @@ static const char *non_printable_name(uint16_t usage_page, uint32_t keycode) {
     }
 }
 
-static void replay_keycode_for_display(const struct dm_event *ev) {
-    suppress_recording = true;
-    struct zmk_keycode_state_changed press = {
-        .usage_page = ev->usage_page,
-        .keycode = ev->keycode,
-        .implicit_modifiers = ev->implicit_mods,
-        .explicit_modifiers = ev->explicit_mods,
-        .state = true,
-        .timestamp = k_uptime_get(),
-    };
-    raise_zmk_keycode_state_changed(press);
-    k_msleep(TAP_DELAY);
-
-    struct zmk_keycode_state_changed release = press;
-    release.state = false;
-    release.timestamp = k_uptime_get();
-    raise_zmk_keycode_state_changed(release);
-    suppress_recording = false;
-}
-
-static void type_modifier_prefix(uint8_t active_mods) {
+static void render_modifier_prefix(uint8_t active_mods) {
     static const uint8_t mod_bits[] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
     static const char *mod_names[] = {"LCTL", "LSFT", "LALT", "LGUI",
                                       "RCTL", "RSFT", "RALT", "RGUI"};
@@ -279,20 +312,18 @@ static void type_modifier_prefix(uint8_t active_mods) {
     for (int i = 0; i < 8; i++) {
         if (active_mods & mod_bits[i]) {
             if (!first) {
-                type_char('+');
-                k_msleep(TAP_DELAY);
+                fb_append_char('+');
             }
-            type_string(mod_names[i]);
+            fb_append_str(mod_names[i]);
             first = false;
         }
     }
     if (!first) {
-        type_char('+');
-        k_msleep(TAP_DELAY);
+        fb_append_char('+');
     }
 }
 
-static void type_slot_contents(const struct dm_slot *slot) {
+static void render_slot_contents(const struct dm_slot *slot) {
     uint8_t active_mods = 0;
 
     for (uint32_t i = 0; i < slot->event_count; i++) {
@@ -313,90 +344,233 @@ static void type_slot_contents(const struct dm_slot *slot) {
         }
 
         if (active_mods) {
-            type_modifier_prefix(active_mods);
+            render_modifier_prefix(active_mods);
         }
 
         if (is_non_printable(ev->usage_page, ev->keycode)) {
-            type_string(non_printable_name(ev->usage_page, ev->keycode));
+            fb_append_str(non_printable_name(ev->usage_page, ev->keycode));
         } else {
-            replay_keycode_for_display(ev);
+            fb_append_hid(ev->keycode, ev->implicit_mods);
         }
-        type_char(' ');
-        k_msleep(TAP_DELAY);
+        fb_append_char(' ');
     }
+}
+
+static int filled_slot_count(void) {
+    int filled = 0;
+
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        if (dm.slots[i].event_count > 0) {
+            filled++;
+        }
+    }
+
+    return filled;
+}
+
+static void render_status_slot(int slot_idx) {
+    fb_append_char('S');
+    fb_append_number(slot_idx);
+    fb_append_str(": ");
+    if (dm.slots[slot_idx].event_count == 0) {
+        fb_append_char('-');
+    } else {
+        fb_append_char('\'');
+        render_slot_contents(&dm.slots[slot_idx]);
+        fb_append_str("' (");
+        fb_append_number(dm.slots[slot_idx].event_count);
+        fb_append_char(')');
+    }
+    fb_append_char('\n');
+}
+
+static void feedback_complete(void) {
+    if (status_mode && status_next_slot < MAX_SLOTS) {
+        fb_reset();
+        render_status_slot(status_next_slot);
+        status_next_slot++;
+        k_timer_start(&feedback_timer, K_NO_WAIT, K_NO_WAIT);
+        return;
+    }
+
+    status_mode = false;
+    suppress_recording = false;
+
+    int post_save_slot = feedback_post_save_slot;
+    enum dm_state return_state = feedback_return_state;
+
+    feedback_post_save_slot = -1;
+    feedback_return_state = DM_STATE_IDLE;
+    dm.state = return_state;
+
+    if (return_state == DM_STATE_PENDING_ASSIGN || return_state == DM_STATE_DELETE_PENDING) {
+        k_work_reschedule(&dm.assign_timeout_work,
+                          K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+    }
+
+    if (post_save_slot >= 0) {
+        save_slot(post_save_slot);
+    }
+}
+
+static void feedback_work_handler(struct k_work *work) {
+    if (dm.state != DM_STATE_TYPING_FEEDBACK) {
+        return;
+    }
+
+    if (feedback_pos >= feedback_len) {
+        feedback_complete();
+        return;
+    }
+
+    const struct fb_event *ev = &feedback_buf[feedback_pos];
+    struct zmk_keycode_state_changed kc = {
+        .usage_page = 0x07,
+        .keycode = ev->keycode,
+        .implicit_modifiers = ev->mods,
+        .explicit_modifiers = 0,
+        .state = feedback_press_phase,
+        .timestamp = k_uptime_get(),
+    };
+
+    raise_zmk_keycode_state_changed(kc);
+
+    if (feedback_press_phase) {
+        feedback_press_phase = false;
+    } else {
+        feedback_press_phase = true;
+        feedback_pos++;
+    }
+
+    k_timer_start(&feedback_timer, K_MSEC(TAP_DELAY), K_NO_WAIT);
+}
+
+static void feedback_timer_handler(struct k_timer *timer) {
+    k_work_submit(&feedback_work);
+}
+
+static void start_feedback(enum dm_state return_state, int post_save_slot) {
+    feedback_return_state = return_state;
+    feedback_post_save_slot = post_save_slot;
+    feedback_pos = 0;
+    feedback_press_phase = true;
+    suppress_recording = true;
+    dm.state = DM_STATE_TYPING_FEEDBACK;
+
+    if (feedback_len == 0) {
+        feedback_complete();
+        return;
+    }
+
+    k_timer_start(&feedback_timer, K_NO_WAIT, K_NO_WAIT);
 }
 
 static void feedback_rec(void) {
-    type_string("[DM REC]");
+    status_mode = false;
+    fb_reset();
+    fb_append_str("[DM REC]");
+    start_feedback(DM_STATE_RECORDING, -1);
 }
 
 static void feedback_stop(void) {
-    type_string("[DM STOP]");
+    status_mode = false;
+    fb_reset();
+    fb_append_str("[DM STOP]");
+    start_feedback(DM_STATE_PENDING_ASSIGN, -1);
 }
 
 static void feedback_saved(int slot_idx, const struct dm_slot *slot) {
-    type_string("[DM SAVED ");
-    type_number(slot_idx);
-    type_string(": '");
-    type_slot_contents(slot);
-    type_string("']");
+    status_mode = false;
+    fb_reset();
+    fb_append_str("[DM SAVED ");
+    fb_append_number(slot_idx);
+    fb_append_str(": '");
+    render_slot_contents(slot);
+    fb_append_str("']");
+    start_feedback(DM_STATE_IDLE, slot_idx);
 }
 
 static void feedback_slot_full(int slot_idx) {
-    type_string("[DM SLOT ");
-    type_number(slot_idx);
-    type_string(" FULL]");
+    status_mode = false;
+    fb_reset();
+    fb_append_str("[DM SLOT ");
+    fb_append_number(slot_idx);
+    fb_append_str(" FULL]");
+    start_feedback(DM_STATE_PENDING_ASSIGN, -1);
 }
 
 static void feedback_deleted(int slot_idx) {
-    type_string("[DM DEL ");
-    type_number(slot_idx);
-    type_string("]");
+    status_mode = false;
+    fb_reset();
+    fb_append_str("[DM DEL ");
+    fb_append_number(slot_idx);
+    fb_append_str("]");
+    start_feedback(DM_STATE_IDLE, -1);
 }
 
 static void feedback_slot_empty(int slot_idx) {
-    type_string("[DM SLOT ");
-    type_number(slot_idx);
-    type_string(" EMPTY]");
+    status_mode = false;
+    fb_reset();
+    fb_append_str("[DM SLOT ");
+    fb_append_number(slot_idx);
+    fb_append_str(" EMPTY]");
+    start_feedback(DM_STATE_IDLE, -1);
 }
 
 static void feedback_overflow(void) {
-    type_string("[DM ERR: OVERFLOW]");
+    status_mode = false;
+    fb_reset();
+    fb_append_str("[DM FULL]");
+    start_feedback(DM_STATE_PENDING_ASSIGN, -1);
 }
 
 static void feedback_status(void) {
-    type_string("[DM STATUS]\n");
-    for (int i = 0; i < MAX_SLOTS; i++) {
-        type_string("Slot ");
-        type_number(i);
-        type_string(": ");
-        if (dm.slots[i].event_count == 0) {
-            type_string("empty");
-        } else {
-            type_string("'");
-            type_slot_contents(&dm.slots[i]);
-            type_string("' ");
-            type_char('(');
-            k_msleep(TAP_DELAY);
-            type_number(dm.slots[i].event_count);
-            type_string(" events)");
-        }
-        type_char('\n');
-        k_msleep(TAP_DELAY);
-    }
+    status_mode = true;
+    status_next_slot = 1;
+    fb_reset();
+    fb_append_str("[DM ");
+    fb_append_number(filled_slot_count());
+    fb_append_char('/');
+    fb_append_number(MAX_SLOTS);
+    fb_append_str("]\n");
+    render_status_slot(0);
+    start_feedback(DM_STATE_IDLE, -1);
 }
 
 #else /* !CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK */
 
 static bool suppress_recording = false;
-static void feedback_rec(void) {}
-static void feedback_stop(void) {}
-static void feedback_saved(int slot_idx, const struct dm_slot *slot) {}
-static void feedback_slot_full(int slot_idx) {}
-static void feedback_deleted(int slot_idx) {}
-static void feedback_slot_empty(int slot_idx) {}
-static void feedback_overflow(void) {}
-static void feedback_status(void) {}
+static void feedback_rec(void) { dm.state = DM_STATE_RECORDING; }
+static void feedback_stop(void) {
+    dm.state = DM_STATE_PENDING_ASSIGN;
+    k_work_reschedule(&dm.assign_timeout_work,
+                      K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+}
+static void feedback_saved(int slot_idx, const struct dm_slot *slot) {
+    (void)slot;
+    dm.state = DM_STATE_IDLE;
+    save_slot(slot_idx);
+}
+static void feedback_slot_full(int slot_idx) {
+    (void)slot_idx;
+    dm.state = DM_STATE_PENDING_ASSIGN;
+    k_work_reschedule(&dm.assign_timeout_work,
+                      K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+}
+static void feedback_deleted(int slot_idx) {
+    (void)slot_idx;
+    dm.state = DM_STATE_IDLE;
+}
+static void feedback_slot_empty(int slot_idx) {
+    (void)slot_idx;
+    dm.state = DM_STATE_IDLE;
+}
+static void feedback_overflow(void) {
+    dm.state = DM_STATE_PENDING_ASSIGN;
+    k_work_reschedule(&dm.assign_timeout_work,
+                      K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+}
+static void feedback_status(void) { dm.state = DM_STATE_IDLE; }
 
 #endif /* CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK */
 
@@ -552,7 +726,7 @@ static void cmd_record(void) {
     }
 
     dm.recording_buffer.event_count = 0;
-    dm.state = DM_STATE_RECORDING;
+    k_work_cancel_delayable(&dm.assign_timeout_work);
     LOG_DBG("Started recording dynamic macro");
     feedback_rec();
 }
@@ -562,9 +736,6 @@ static void cmd_stop(void) {
         return;
     }
 
-    dm.state = DM_STATE_PENDING_ASSIGN;
-    k_work_reschedule(&dm.assign_timeout_work,
-                      K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
     LOG_DBG("Stopped recording (%d events), awaiting slot assignment",
             dm.recording_buffer.event_count);
     feedback_stop();
@@ -586,9 +757,7 @@ static void cmd_status(void) {
         return;
     }
 
-    dm.state = DM_STATE_TYPING_FEEDBACK;
     feedback_status();
-    dm.state = DM_STATE_IDLE;
 }
 
 static void cmd_slot(int slot_idx) {
@@ -602,16 +771,10 @@ static void cmd_slot(int slot_idx) {
         k_work_cancel_delayable(&dm.assign_timeout_work);
         if (dm.slots[slot_idx].event_count > 0) {
             feedback_slot_full(slot_idx);
-            /* Stay in PENDING_ASSIGN, restart timeout */
-            k_work_reschedule(&dm.assign_timeout_work,
-                              K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
             return;
         }
         memcpy(&dm.slots[slot_idx], &dm.recording_buffer, sizeof(struct dm_slot));
-        dm.state = DM_STATE_TYPING_FEEDBACK;
         feedback_saved(slot_idx, &dm.slots[slot_idx]);
-        dm.state = DM_STATE_IDLE;
-        save_slot(slot_idx);
         LOG_DBG("Assigned recording to slot %d (%d events)", slot_idx,
                 dm.slots[slot_idx].event_count);
         break;
@@ -625,7 +788,6 @@ static void cmd_slot(int slot_idx) {
             feedback_deleted(slot_idx);
             delete_slot_from_storage(slot_idx);
         }
-        dm.state = DM_STATE_IDLE;
         LOG_DBG("Slot %d cleared", slot_idx);
         break;
 
@@ -702,9 +864,6 @@ static int dm_event_listener(const zmk_event_t *eh) {
     }
 
     if (dm.recording_buffer.event_count >= MAX_EVENTS) {
-        dm.state = DM_STATE_PENDING_ASSIGN;
-        k_work_reschedule(&dm.assign_timeout_work,
-                          K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
         LOG_WRN("Dynamic macro recording buffer full (%d events)", MAX_EVENTS);
         feedback_overflow();
         return ZMK_EV_EVENT_BUBBLE;
@@ -740,6 +899,11 @@ static int behavior_dynamic_macro_init(const struct device *dev) {
     k_work_init_delayable(&dm.assign_timeout_work, assign_timeout_handler);
     k_work_init(&playback_work, playback_work_handler);
     k_timer_init(&playback_timer, playback_timer_handler, NULL);
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK)
+    k_work_init(&feedback_work, feedback_work_handler);
+    k_timer_init(&feedback_timer, feedback_timer_handler, NULL);
+    feedback_post_save_slot = -1;
+#endif
 
     LOG_DBG("Dynamic macro behavior initialized (%d slots, %d max events)",
             MAX_SLOTS, MAX_EVENTS);
