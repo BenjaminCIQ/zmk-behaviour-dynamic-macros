@@ -114,10 +114,10 @@ If the slot is already empty, you'll see `[DM SLOT N EMPTY]`.
 
 Example output:
 ```
-[DM STATUS]
-Slot 0: 'Hello world ' (22 events)
-Slot 1: empty
-Slot 2: 'LCTL+c LCTL+v ' (8 events)
+[DM 2/16]
+S0: 'Hello world' (22)
+S1: -
+S2: '<LCTL+C><LCTL+V>' (8)
 ...
 ```
 
@@ -196,7 +196,7 @@ Typed feedback goes to **whatever application currently has focus** on the host 
 - `[DM REC]` will appear in your text editor, terminal, etc.
 - The STATUS command types multiple lines of text
 
-**Assumption:** The host keyboard layout is **US QWERTY**. Feedback text uses ASCII symbols (`[`, `]`, `:`, `'`, `+`) that map to specific HID keycodes assuming US QWERTY. If your host uses a different layout, the wrapper symbols may render differently, though the macro content display (which replays the original keycodes) will always be correct.
+**Assumption:** The host keyboard layout is **US QWERTY**. Feedback text and macro previews use ASCII symbols (`[`, `]`, `:`, `'`, `+`) that map to specific HID keycodes assuming US QWERTY. If your host uses a different layout, wrapper symbols and printable preview characters may render differently.
 
 Feedback can be disabled entirely by setting `CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK=n` in your `.conf` file.
 
@@ -206,10 +206,12 @@ The module runs on the **central** half only. ZMK's event system automatically m
 
 ### Macro Content Display
 
-When a macro is saved, its contents are displayed using a hybrid approach:
-- **Printable characters** (letters, numbers, punctuation) are replayed directly from the recorded keycodes, so they display exactly as the macro would type them
-- **Modifiers** are shown as text names joined with `+`: `LCTL+c`, `LSFT+LCTL+a`
-- **Non-printable keys** are shown as text names: `RET`, `BSPC`, `TAB`, `SPC`, `ESC`, `F1`-`F12`, arrow keys, etc.
+When a macro is saved, its contents are displayed as a literal preview:
+- **Printable text** (letters, numbers, punctuation, and spaces) is concatenated without extra separators, so `hello world` displays as `hello world`.
+- **Shifted printable keys** render as the resulting character, so `LSFT+a` displays as `A` and `LSFT+1` displays as `!`.
+- **Command/action keys** render inline as angle-bracket tokens, such as `<LCTL+C>`, `<TAB>`, `<BSPC>`, `<PGUP>`, or `<MEDIA>`.
+
+Only Shift is treated as part of literal text output. Ctrl, Alt, Gui, navigation, editing, media, mouse, and other non-keyboard actions are shown as action tokens instead of being simulated in the preview.
 
 ### Slot Overwrite Protection
 

@@ -230,43 +230,51 @@ static void fb_append_number(int n) {
     }
 }
 
-/* Non-printable key names (keys that can't be replayed for display) */
+/* Macro preview rendering: literal text stays literal; actions become <TOKENS>. */
 
 static bool is_modifier_keycode(uint32_t keycode) {
     return keycode >= 0xE0 && keycode <= 0xE7;
 }
 
-static bool is_non_printable(uint16_t usage_page, uint32_t keycode) {
-    if (usage_page != 0x07) {
+static bool printable_char_for_keycode(uint32_t keycode, bool shifted, char *out) {
+    if (keycode >= 0x04 && keycode <= 0x1D) {
+        *out = (shifted ? 'A' : 'a') + (keycode - 0x04);
         return true;
     }
-    if (keycode == 0x28) return true; /* ENTER */
-    if (keycode == 0x29) return true; /* ESC */
-    if (keycode == 0x2A) return true; /* BSPC */
-    if (keycode == 0x2B) return true; /* TAB */
-    if (keycode == 0x2C) return true; /* SPACE */
-    if (keycode == 0x39) return true; /* CAPS */
-    if (keycode >= 0x3A && keycode <= 0x45) return true; /* F1-F12 */
-    if (keycode == 0x46) return true; /* PSCRN */
-    if (keycode == 0x47) return true; /* SLCK */
-    if (keycode == 0x48) return true; /* PAUSE */
-    if (keycode == 0x49) return true; /* INS */
-    if (keycode == 0x4A) return true; /* HOME */
-    if (keycode == 0x4B) return true; /* PGUP */
-    if (keycode == 0x4C) return true; /* DEL */
-    if (keycode == 0x4D) return true; /* END */
-    if (keycode == 0x4E) return true; /* PGDN */
-    if (keycode == 0x4F) return true; /* RIGHT */
-    if (keycode == 0x50) return true; /* LEFT */
-    if (keycode == 0x51) return true; /* DOWN */
-    if (keycode == 0x52) return true; /* UP */
-    if (is_modifier_keycode(keycode)) return true;
-    return false;
+    if (keycode >= 0x1E && keycode <= 0x27) {
+        static const char normal[] = "1234567890";
+        static const char shifted_chars[] = "!@#$%^&*()";
+        *out = shifted ? shifted_chars[keycode - 0x1E] : normal[keycode - 0x1E];
+        return true;
+    }
+    switch (keycode) {
+    case 0x2C: *out = ' '; return true;
+    case 0x2D: *out = shifted ? '_' : '-'; return true;
+    case 0x2E: *out = shifted ? '+' : '='; return true;
+    case 0x2F: *out = shifted ? '{' : '['; return true;
+    case 0x30: *out = shifted ? '}' : ']'; return true;
+    case 0x31: *out = shifted ? '|' : '\\'; return true;
+    case 0x33: *out = shifted ? ':' : ';'; return true;
+    case 0x34: *out = shifted ? '"' : '\''; return true;
+    case 0x35: *out = shifted ? '~' : '`'; return true;
+    case 0x36: *out = shifted ? '<' : ','; return true;
+    case 0x37: *out = shifted ? '>' : '.'; return true;
+    case 0x38: *out = shifted ? '?' : '/'; return true;
+    default: return false;
+    }
 }
 
-static const char *non_printable_name(uint16_t usage_page, uint32_t keycode) {
-    if (usage_page != 0x07) {
-        return "MEDIA";
+static const char *keyboard_action_name(uint32_t keycode) {
+    if (keycode >= 0x04 && keycode <= 0x1D) {
+        static const char *letters[] = {
+            "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+            "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+        };
+        return letters[keycode - 0x04];
+    }
+    if (keycode >= 0x1E && keycode <= 0x27) {
+        static const char *numbers[] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"};
+        return numbers[keycode - 0x1E];
     }
     switch (keycode) {
     case 0x28: return "RET";
@@ -274,6 +282,17 @@ static const char *non_printable_name(uint16_t usage_page, uint32_t keycode) {
     case 0x2A: return "BSPC";
     case 0x2B: return "TAB";
     case 0x2C: return "SPC";
+    case 0x2D: return "-";
+    case 0x2E: return "=";
+    case 0x2F: return "[";
+    case 0x30: return "]";
+    case 0x31: return "\\";
+    case 0x33: return ";";
+    case 0x34: return "'";
+    case 0x35: return "`";
+    case 0x36: return ",";
+    case 0x37: return ".";
+    case 0x38: return "/";
     case 0x39: return "CAPS";
     case 0x3A: return "F1";
     case 0x3B: return "F2";
@@ -300,17 +319,37 @@ static const char *non_printable_name(uint16_t usage_page, uint32_t keycode) {
     case 0x50: return "LEFT";
     case 0x51: return "DOWN";
     case 0x52: return "UP";
-    default:   return "??";
+    default:   return "KEY";
     }
 }
 
-static void render_modifier_prefix(uint8_t active_mods) {
+static const char *action_name(uint16_t usage_page, uint32_t keycode) {
+    if (usage_page == 0x07) {
+        return keyboard_action_name(keycode);
+    }
+    if (usage_page == 0x09) {
+        switch (keycode) {
+        case 0x01: return "MOUSE_LEFT";
+        case 0x02: return "MOUSE_RIGHT";
+        case 0x03: return "MOUSE_MIDDLE";
+        case 0x04: return "MOUSE_BACK";
+        case 0x05: return "MOUSE_FORWARD";
+        default:   return "MOUSE";
+        }
+    }
+    if (usage_page == 0x0C) {
+        return "MEDIA";
+    }
+    return "ACTION";
+}
+
+static bool render_modifiers(uint8_t mods) {
     static const uint8_t mod_bits[] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
     static const char *mod_names[] = {"LCTL", "LSFT", "LALT", "LGUI",
                                       "RCTL", "RSFT", "RALT", "RGUI"};
     bool first = true;
     for (int i = 0; i < 8; i++) {
-        if (active_mods & mod_bits[i]) {
+        if (mods & mod_bits[i]) {
             if (!first) {
                 fb_append_char('+');
             }
@@ -318,12 +357,21 @@ static void render_modifier_prefix(uint8_t active_mods) {
             first = false;
         }
     }
-    if (!first) {
+    return !first;
+}
+
+static void render_action_token(uint8_t mods, uint16_t usage_page, uint32_t keycode) {
+    fb_append_char('<');
+    if (render_modifiers(mods)) {
         fb_append_char('+');
     }
+    fb_append_str(action_name(usage_page, keycode));
+    fb_append_char('>');
 }
 
 static void render_slot_contents(const struct dm_slot *slot) {
+    const uint8_t shift_mods = 0x02 | 0x20;
+    const uint8_t non_shift_mods = 0xFF & ~shift_mods;
     uint8_t active_mods = 0;
 
     for (uint32_t i = 0; i < slot->event_count; i++) {
@@ -343,16 +391,16 @@ static void render_slot_contents(const struct dm_slot *slot) {
             continue;
         }
 
-        if (active_mods) {
-            render_modifier_prefix(active_mods);
-        }
+        uint8_t mods = active_mods | ev->implicit_mods | ev->explicit_mods;
+        bool shifted = (mods & shift_mods) != 0;
+        char output;
 
-        if (is_non_printable(ev->usage_page, ev->keycode)) {
-            fb_append_str(non_printable_name(ev->usage_page, ev->keycode));
+        if (ev->usage_page == 0x07 && (mods & non_shift_mods) == 0 &&
+            printable_char_for_keycode(ev->keycode, shifted, &output)) {
+            fb_append_char(output);
         } else {
-            fb_append_hid(ev->keycode, ev->implicit_mods);
+            render_action_token(mods, ev->usage_page, ev->keycode);
         }
-        fb_append_char(' ');
     }
 }
 
