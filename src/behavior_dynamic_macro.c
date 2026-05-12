@@ -57,15 +57,37 @@ BUILD_ASSERT(MAX_SLOTS <= 64, "Dynamic macros support at most 64 total slots");
 #warning "Dynamic macro has zero slots; all dynamic macro slot bindings are invalid"
 #endif
 
+#define DM_IS_DM_BINDING(idx, layer)                                                              \
+    DT_NODE_HAS_COMPAT(DT_PHANDLE_BY_IDX(layer, bindings, idx),                                   \
+                       zmk_behavior_dynamic_macro)
+
 #define DM_VALIDATE_SLOT_CMD(idx, layer, command, limit, msg)                                     \
-    COND_CODE_1(DT_NODE_HAS_COMPAT(DT_PHANDLE_BY_IDX(layer, bindings, idx),                       \
-                                   zmk_behavior_dynamic_macro),                                   \
+    COND_CODE_1(DM_IS_DM_BINDING(idx, layer),                                                     \
                 (BUILD_ASSERT(DT_PHA_BY_IDX(layer, bindings, idx, param1) != command ||           \
                                   DT_PHA_BY_IDX(layer, bindings, idx, param2) < (limit),           \
                               msg);),                                                            \
                 ())
 
+#define DM_VALIDATE_CMD_RANGE(idx, layer)                                                         \
+    COND_CODE_1(DM_IS_DM_BINDING(idx, layer),                                                     \
+                (BUILD_ASSERT(DT_PHA_BY_IDX(layer, bindings, idx, param1) <= DM_SLOT_RAM,         \
+                              "Dynamic macro param1 is not a valid command (expected 0-6)");),    \
+                ())
+
+#define DM_VALIDATE_CMD_NO_PARAM2(idx, layer, command)                                            \
+    COND_CODE_1(DM_IS_DM_BINDING(idx, layer),                                                     \
+                (BUILD_ASSERT(DT_PHA_BY_IDX(layer, bindings, idx, param1) != command ||           \
+                                  DT_PHA_BY_IDX(layer, bindings, idx, param2) == 0,                \
+                              #command " does not use param2 (must be 0)");),                     \
+                ())
+
 #define DM_VALIDATE_KEYMAP_BINDING(idx, layer)                                                    \
+    DM_VALIDATE_CMD_RANGE(idx, layer)                                                             \
+    DM_VALIDATE_CMD_NO_PARAM2(idx, layer, DM_REC)                                                 \
+    DM_VALIDATE_CMD_NO_PARAM2(idx, layer, DM_STP)                                                 \
+    DM_VALIDATE_CMD_NO_PARAM2(idx, layer, DM_DEL)                                                 \
+    DM_VALIDATE_CMD_NO_PARAM2(idx, layer, DM_STATE)                                               \
+    DM_VALIDATE_CMD_NO_PARAM2(idx, layer, DM_MOV)                                                 \
     DM_VALIDATE_SLOT_CMD(idx, layer, DM_SLOT_NVS, NVS_SLOTS,                                      \
                          "DM_SLOT_NVS index exceeds configured NVS dynamic macro slots")          \
     DM_VALIDATE_SLOT_CMD(idx, layer, DM_SLOT_RAM, RAM_SLOTS,                                      \
