@@ -11,6 +11,7 @@ A [ZMK](https://zmk.dev/) module that adds dynamic macro recording and playback 
 - **Move** macros between slots to reorganize, promote RAM macros to NVS, or demote NVS macros to RAM
 - **Chain** existing macros into a new recording to build compound macros
 - **Status** output showing all filled slots with their contents
+- **Typed slot bindings** let keymaps choose NVS or RAM slots directly with `DM_SLOT_NVS` and `DM_SLOT_RAM`
 - **NVS slots** persist across reboots and are labeled `N0`, `N1`, etc.
 - **RAM slots** are temporary, never touch flash, and are labeled after the NVS range, such as `R8`
 - **Async NVS persistence** to reduce USB stalls during flash writes
@@ -122,15 +123,15 @@ Create a layer in your keymap with slot keys and control keys:
 layer_Macro {
     display-name = "Macro";
     bindings = <
-        &dm DM_SLOT 0   &dm DM_SLOT 1   &dm DM_SLOT 2   &dm DM_SLOT 3   &none
-        &dm DM_SLOT 4   &dm DM_SLOT 5   &dm DM_SLOT 6   &dm DM_SLOT 7   &none
-        &none           &none           &none           &none           &none
-                        &dm DM_REC 0    &dm DM_STP 0    &dm DM_DEL 0
+        &dm DM_SLOT_NVS 0  &dm DM_SLOT_NVS 1  &dm DM_SLOT_NVS 2  &dm DM_SLOT_NVS 3  &none
+        &dm DM_SLOT_NVS 4  &dm DM_SLOT_NVS 5  &dm DM_SLOT_NVS 6  &dm DM_SLOT_NVS 7  &none
+        &none              &none              &none              &none              &none
+                           &dm DM_REC 0       &dm DM_STP 0       &dm DM_DEL 0
         /* right side */
-        &none           &dm DM_SLOT 8   &dm DM_SLOT 9   &dm DM_SLOT 10  &dm DM_SLOT 11
-        &none           &dm DM_SLOT 12  &dm DM_SLOT 13  &dm DM_SLOT 14  &dm DM_SLOT 15
-        &none           &none           &none           &none           &none
-                        &dm DM_MOV 0    &dm DM_STATE 0  &tog MACRO
+        &none              &dm DM_SLOT_RAM 0  &dm DM_SLOT_RAM 1  &dm DM_SLOT_RAM 2  &dm DM_SLOT_RAM 3
+        &none              &dm DM_SLOT_RAM 4  &dm DM_SLOT_RAM 5  &dm DM_SLOT_RAM 6  &dm DM_SLOT_RAM 7
+        &none              &none              &none              &none              &none
+                           &dm DM_MOV 0       &dm DM_STATE 0     &tog MACRO
     >;
 };
 ```
@@ -250,7 +251,9 @@ Pressing **REC** while already recording restarts the recording (discards the cu
 | `&dm DM_DEL 0`   | Enter delete mode                                                                                                                          |
 | `&dm DM_MOV 0`   | Enter move mode; press source slot, then destination slot                                                                                  |
 | `&dm DM_STATE 0` | Output status of all slots                                                                                                                 |
-| `&dm DM_SLOT N`  | Interact with slot N (play, assign, delete, move-select, or chain depending on current state); N must be less than `NVS_SLOTS + RAM_SLOTS` |
+| `&dm DM_SLOT_NVS N` | Interact with NVS slot N (play, assign, delete, move-select, or chain depending on current state); N must be less than `NVS_SLOTS`       |
+| `&dm DM_SLOT_RAM N` | Interact with RAM slot N (play, assign, delete, move-select, or chain depending on current state); N must be less than `RAM_SLOTS`       |
+| `&dm DM_SLOT N`  | Legacy unified-index slot binding; N must be less than `NVS_SLOTS + RAM_SLOTS`                                                             |
 
 
 ## State Machine
@@ -311,9 +314,11 @@ Normal keyboard input is captured while in RECORDING but does not change the sta
 
 ### NVS and RAM Storage
 
-Slots are split into NVS-backed and RAM-only ranges. `CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_NVS_SLOTS` controls how many low-index slots persist, and `CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_RAM_SLOTS` controls how many temporary slots follow them. With the defaults, slots 0-7 are persistent (`N0`-`N7`) and slots 8-15 are volatile (`R8`-`R15`).
+Slots are split internally into NVS-backed and RAM-only ranges. `CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_NVS_SLOTS` controls how many low-index slots persist, and `CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_RAM_SLOTS` controls how many temporary slots follow them. With the defaults, internal slots 0-7 are persistent (`N0`-`N7`) and internal slots 8-15 are volatile (`R8`-`R15`).
 
-NVS slots are capped at 16, RAM slots are capped at 48, and total slots are capped at 64. Keymap bindings such as `&dm DM_SLOT 16` fail the build if the configured total slot count does not include that slot. Setting both slot counts to 0 is allowed and emits a Kconfig warning; the behavior still compiles, but no `DM_SLOT` binding is valid.
+Prefer `DM_SLOT_NVS` and `DM_SLOT_RAM` in keymaps. These commands use pool-relative indices, so `&dm DM_SLOT_RAM 0` addresses the first RAM slot even though feedback/status labels it as `R8` with the default 8 NVS slots. The legacy `DM_SLOT` command still accepts the unified internal index for backward compatibility.
+
+NVS slots are capped at 16, RAM slots are capped at 48, and total slots are capped at 64. Keymap bindings such as `&dm DM_SLOT_NVS 8` or `&dm DM_SLOT_RAM 8` fail the build if the configured pool does not include that slot. Setting both slot counts to 0 is allowed and emits a Kconfig warning; the behavior still compiles, but no slot binding is valid.
 
 If persistence is disabled, NVS slots are effectively 0. Set `CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_RAM_SLOTS` to the number of volatile slots you want.
 

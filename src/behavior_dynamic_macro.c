@@ -54,16 +54,24 @@ BUILD_ASSERT(RAM_SLOTS <= 48, "Dynamic macros support at most 48 RAM slots");
 BUILD_ASSERT(MAX_SLOTS <= 64, "Dynamic macros support at most 64 total slots");
 
 #if MAX_SLOTS == 0
-#warning "Dynamic macro has zero slots; all DM_SLOT keymap bindings are invalid"
+#warning "Dynamic macro has zero slots; all dynamic macro slot bindings are invalid"
 #endif
 
-#define DM_VALIDATE_KEYMAP_BINDING(idx, layer)                                                   \
+#define DM_VALIDATE_SLOT_CMD(idx, layer, command, limit, msg)                                     \
     COND_CODE_1(DT_NODE_HAS_COMPAT(DT_PHANDLE_BY_IDX(layer, bindings, idx),                       \
                                    zmk_behavior_dynamic_macro),                                   \
-                (BUILD_ASSERT(DT_PHA_BY_IDX(layer, bindings, idx, param1) != DM_SLOT ||           \
-                                  DT_PHA_BY_IDX(layer, bindings, idx, param2) < MAX_SLOTS,        \
-                              "DM_SLOT index exceeds configured dynamic macro slots");),          \
+                (BUILD_ASSERT(DT_PHA_BY_IDX(layer, bindings, idx, param1) != command ||           \
+                                  DT_PHA_BY_IDX(layer, bindings, idx, param2) < (limit),           \
+                              msg);),                                                            \
                 ())
+
+#define DM_VALIDATE_KEYMAP_BINDING(idx, layer)                                                    \
+    DM_VALIDATE_SLOT_CMD(idx, layer, DM_SLOT, MAX_SLOTS,                                          \
+                         "DM_SLOT index exceeds configured dynamic macro slots")                  \
+    DM_VALIDATE_SLOT_CMD(idx, layer, DM_SLOT_NVS, NVS_SLOTS,                                      \
+                         "DM_SLOT_NVS index exceeds configured NVS dynamic macro slots")          \
+    DM_VALIDATE_SLOT_CMD(idx, layer, DM_SLOT_RAM, RAM_SLOTS,                                      \
+                         "DM_SLOT_RAM index exceeds configured RAM dynamic macro slots")
 
 #define DM_VALIDATE_KEYMAP_LAYER(layer)                                                           \
     COND_CODE_1(DT_NODE_HAS_PROP(layer, bindings),                                                \
@@ -160,6 +168,16 @@ static const struct behavior_parameter_value_metadata dm_param_state[] = {
 static const struct behavior_parameter_value_metadata dm_param_move[] = {
     DM_COMMAND_VALUE("Move", DM_MOV),
 };
+#if NVS_SLOTS > 0
+static const struct behavior_parameter_value_metadata dm_param_slot_nvs[] = {
+    DM_COMMAND_VALUE("NVS Slot", DM_SLOT_NVS),
+};
+#endif
+#if RAM_SLOTS > 0
+static const struct behavior_parameter_value_metadata dm_param_slot_ram[] = {
+    DM_COMMAND_VALUE("RAM Slot", DM_SLOT_RAM),
+};
+#endif
 static const struct behavior_parameter_value_metadata dm_param_unused[] = {
     {
         .display_name = "Unused",
@@ -176,6 +194,24 @@ static const struct behavior_parameter_value_metadata dm_param_slot_index[] = {
         .display_name = "Slot index",
         .type = BEHAVIOR_PARAMETER_VALUE_TYPE_RANGE,
         .range = {.min = 0, .max = MAX_SLOTS - 1},
+    },
+};
+#endif
+#if NVS_SLOTS > 0
+static const struct behavior_parameter_value_metadata dm_param_nvs_slot_index[] = {
+    {
+        .display_name = "NVS slot index",
+        .type = BEHAVIOR_PARAMETER_VALUE_TYPE_RANGE,
+        .range = {.min = 0, .max = NVS_SLOTS - 1},
+    },
+};
+#endif
+#if RAM_SLOTS > 0
+static const struct behavior_parameter_value_metadata dm_param_ram_slot_index[] = {
+    {
+        .display_name = "RAM slot index",
+        .type = BEHAVIOR_PARAMETER_VALUE_TYPE_RANGE,
+        .range = {.min = 0, .max = RAM_SLOTS - 1},
     },
 };
 #endif
@@ -217,6 +253,22 @@ static const struct behavior_parameter_metadata_set dm_parameter_metadata_sets[]
         .param1_values = dm_param_slot,
         .param2_values_len = ARRAY_SIZE(dm_param_slot_index),
         .param2_values = dm_param_slot_index,
+    },
+#endif
+#if NVS_SLOTS > 0
+    {
+        .param1_values_len = ARRAY_SIZE(dm_param_slot_nvs),
+        .param1_values = dm_param_slot_nvs,
+        .param2_values_len = ARRAY_SIZE(dm_param_nvs_slot_index),
+        .param2_values = dm_param_nvs_slot_index,
+    },
+#endif
+#if RAM_SLOTS > 0
+    {
+        .param1_values_len = ARRAY_SIZE(dm_param_slot_ram),
+        .param1_values = dm_param_slot_ram,
+        .param2_values_len = ARRAY_SIZE(dm_param_ram_slot_index),
+        .param2_values = dm_param_ram_slot_index,
     },
 #endif
 };
@@ -1644,6 +1696,20 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
         return ZMK_BEHAVIOR_OPAQUE;
     case DM_SLOT:
         cmd_slot(data, binding->param2);
+        return ZMK_BEHAVIOR_OPAQUE;
+    case DM_SLOT_NVS:
+        if (binding->param2 < 0 || binding->param2 >= NVS_SLOTS) {
+            LOG_ERR("NVS slot index %d out of range (max %d)", binding->param2, NVS_SLOTS - 1);
+            return -EINVAL;
+        }
+        cmd_slot(data, binding->param2);
+        return ZMK_BEHAVIOR_OPAQUE;
+    case DM_SLOT_RAM:
+        if (binding->param2 < 0 || binding->param2 >= RAM_SLOTS) {
+            LOG_ERR("RAM slot index %d out of range (max %d)", binding->param2, RAM_SLOTS - 1);
+            return -EINVAL;
+        }
+        cmd_slot(data, NVS_SLOTS + binding->param2);
         return ZMK_BEHAVIOR_OPAQUE;
     default:
         LOG_ERR("Unknown dynamic macro command: %d", binding->param1);
