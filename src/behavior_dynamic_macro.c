@@ -53,6 +53,10 @@ BUILD_ASSERT(NVS_SLOTS <= 16, "Dynamic macros support at most 16 NVS slots");
 BUILD_ASSERT(RAM_SLOTS <= 48, "Dynamic macros support at most 48 RAM slots");
 BUILD_ASSERT(MAX_SLOTS <= 64, "Dynamic macros support at most 64 total slots");
 
+#if MAX_SLOTS == 0
+#warning "Dynamic macro has zero slots; all DM_SLOT keymap bindings are invalid"
+#endif
+
 #define DM_VALIDATE_KEYMAP_BINDING(idx, layer)                                                   \
     COND_CODE_1(DT_NODE_HAS_COMPAT(DT_PHANDLE_BY_IDX(layer, bindings, idx),                       \
                                    zmk_behavior_dynamic_macro),                                   \
