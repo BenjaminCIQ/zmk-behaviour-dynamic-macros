@@ -34,7 +34,7 @@ config ZMK_BEHAVIOR_DYNAMIC_MACRO_RAM_SLOTS
     default 8
     range 0 48
 
-comment "Dynamic macro has zero slots; all DM_SLOT keymap bindings will be unusable"
+comment "Dynamic macro has zero slots; all dynamic macro slot bindings will be unusable"
     depends on ZMK_BEHAVIOR_DYNAMIC_MACRO_RAM_SLOTS = 0
     depends on !ZMK_BEHAVIOR_DYNAMIC_MACRO_PERSIST || ZMK_BEHAVIOR_DYNAMIC_MACRO_NVS_SLOTS = 0
 

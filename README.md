@@ -253,7 +253,6 @@ Pressing **REC** while already recording restarts the recording (discards the cu
 | `&dm DM_STATE 0` | Output status of all slots                                                                                                                 |
 | `&dm DM_SLOT_NVS N` | Interact with NVS slot N (play, assign, delete, move-select, or chain depending on current state); N must be less than `NVS_SLOTS`       |
 | `&dm DM_SLOT_RAM N` | Interact with RAM slot N (play, assign, delete, move-select, or chain depending on current state); N must be less than `RAM_SLOTS`       |
-| `&dm DM_SLOT N`  | Legacy unified-index slot binding; N must be less than `NVS_SLOTS + RAM_SLOTS`                                                             |
 
 
 ## State Machine
@@ -316,7 +315,7 @@ Normal keyboard input is captured while in RECORDING but does not change the sta
 
 Slots are split internally into NVS-backed and RAM-only ranges. `CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_NVS_SLOTS` controls how many low-index slots persist, and `CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_RAM_SLOTS` controls how many temporary slots follow them. With the defaults, internal slots 0-7 are persistent (`N0`-`N7`) and internal slots 8-15 are volatile (`R8`-`R15`).
 
-Prefer `DM_SLOT_NVS` and `DM_SLOT_RAM` in keymaps. These commands use pool-relative indices, so `&dm DM_SLOT_RAM 0` addresses the first RAM slot even though feedback/status labels it as `R8` with the default 8 NVS slots. The legacy `DM_SLOT` command still accepts the unified internal index for backward compatibility.
+Slot bindings use pool-relative indices, so `&dm DM_SLOT_RAM 0` addresses the first RAM slot even though feedback/status labels it as `R8` with the default 8 NVS slots.
 
 NVS slots are capped at 16, RAM slots are capped at 48, and total slots are capped at 64. Keymap bindings such as `&dm DM_SLOT_NVS 8` or `&dm DM_SLOT_RAM 8` fail the build if the configured pool does not include that slot. Setting both slot counts to 0 is allowed and emits a Kconfig warning; the behavior still compiles, but no slot binding is valid.
 

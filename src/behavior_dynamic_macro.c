@@ -66,8 +66,6 @@ BUILD_ASSERT(MAX_SLOTS <= 64, "Dynamic macros support at most 64 total slots");
                 ())
 
 #define DM_VALIDATE_KEYMAP_BINDING(idx, layer)                                                    \
-    DM_VALIDATE_SLOT_CMD(idx, layer, DM_SLOT, MAX_SLOTS,                                          \
-                         "DM_SLOT index exceeds configured dynamic macro slots")                  \
     DM_VALIDATE_SLOT_CMD(idx, layer, DM_SLOT_NVS, NVS_SLOTS,                                      \
                          "DM_SLOT_NVS index exceeds configured NVS dynamic macro slots")          \
     DM_VALIDATE_SLOT_CMD(idx, layer, DM_SLOT_RAM, RAM_SLOTS,                                      \
@@ -185,18 +183,6 @@ static const struct behavior_parameter_value_metadata dm_param_unused[] = {
     },
 };
 
-#if MAX_SLOTS > 0
-static const struct behavior_parameter_value_metadata dm_param_slot[] = {
-    DM_COMMAND_VALUE("Slot", DM_SLOT),
-};
-static const struct behavior_parameter_value_metadata dm_param_slot_index[] = {
-    {
-        .display_name = "Slot index",
-        .type = BEHAVIOR_PARAMETER_VALUE_TYPE_RANGE,
-        .range = {.min = 0, .max = MAX_SLOTS - 1},
-    },
-};
-#endif
 #if NVS_SLOTS > 0
 static const struct behavior_parameter_value_metadata dm_param_nvs_slot_index[] = {
     {
@@ -247,14 +233,6 @@ static const struct behavior_parameter_metadata_set dm_parameter_metadata_sets[]
         .param2_values_len = ARRAY_SIZE(dm_param_unused),
         .param2_values = dm_param_unused,
     },
-#if MAX_SLOTS > 0
-    {
-        .param1_values_len = ARRAY_SIZE(dm_param_slot),
-        .param1_values = dm_param_slot,
-        .param2_values_len = ARRAY_SIZE(dm_param_slot_index),
-        .param2_values = dm_param_slot_index,
-    },
-#endif
 #if NVS_SLOTS > 0
     {
         .param1_values_len = ARRAY_SIZE(dm_param_slot_nvs),
@@ -1693,9 +1671,6 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
         return ZMK_BEHAVIOR_OPAQUE;
     case DM_STATE:
         cmd_status(data);
-        return ZMK_BEHAVIOR_OPAQUE;
-    case DM_SLOT:
-        cmd_slot(data, binding->param2);
         return ZMK_BEHAVIOR_OPAQUE;
     case DM_SLOT_NVS:
         if (binding->param2 < 0 || binding->param2 >= NVS_SLOTS) {
