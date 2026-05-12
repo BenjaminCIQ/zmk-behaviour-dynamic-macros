@@ -36,6 +36,11 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define MAX_SLOTS  CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_MAX_SLOTS
 #define MAX_EVENTS CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_MAX_EVENTS
 #define TAP_DELAY  CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_TAP_DELAY
+#define DM_FEEDBACK_OFF     0
+#define DM_FEEDBACK_ERROR   1
+#define DM_FEEDBACK_BASIC   2
+#define DM_FEEDBACK_VERBOSE 3
+#define DM_FEEDBACK_LEVEL   CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK_LEVEL
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_PERSIST)
 #define NVS_SLOTS CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_NVS_SLOTS
 #else
@@ -64,7 +69,7 @@ struct dm_slot {
     struct dm_event events[MAX_EVENTS];
 };
 
-#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK)
+#if DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF
 #define FEEDBACK_BUF_LEN 512
 
 struct fb_event {
@@ -88,7 +93,7 @@ struct behavior_dynamic_macro_data {
     struct k_timer playback_timer;
     struct k_work playback_work;
     bool suppress_recording;
-#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK)
+#if DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF
     struct fb_event feedback_buf[FEEDBACK_BUF_LEN];
     int feedback_len;
     int feedback_pos;
@@ -117,12 +122,16 @@ static char slot_storage_prefix(int slot_idx) {
 /*  Feedback: text output via simulated keystrokes                            */
 /* -------------------------------------------------------------------------- */
 
-#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK)
+#if DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF
 
 struct hid_keycode {
     uint8_t keycode;
     bool shift;
 };
+
+static bool feedback_enabled(int level) {
+    return DM_FEEDBACK_LEVEL >= level;
+}
 
 static struct hid_keycode ascii_to_hid(char c) {
     if (c >= 'a' && c <= 'z') {
@@ -546,6 +555,11 @@ static void start_feedback(struct behavior_dynamic_macro_data *data, enum dm_sta
 }
 
 static void feedback_rec(struct behavior_dynamic_macro_data *data) {
+    if (!feedback_enabled(DM_FEEDBACK_BASIC)) {
+        data->state = DM_STATE_RECORDING;
+        return;
+    }
+
     data->status_mode = false;
     fb_reset(data);
     fb_append_str(data, "[DM REC]");
@@ -553,6 +567,13 @@ static void feedback_rec(struct behavior_dynamic_macro_data *data) {
 }
 
 static void feedback_stop(struct behavior_dynamic_macro_data *data) {
+    if (!feedback_enabled(DM_FEEDBACK_BASIC)) {
+        data->state = DM_STATE_PENDING_ASSIGN;
+        k_work_reschedule(&data->assign_timeout_work,
+                          K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+        return;
+    }
+
     data->status_mode = false;
     fb_reset(data);
     fb_append_str(data, "[DM STOP]");
@@ -561,18 +582,34 @@ static void feedback_stop(struct behavior_dynamic_macro_data *data) {
 
 static void feedback_saved(struct behavior_dynamic_macro_data *data, int slot_idx,
                            const struct dm_slot *slot) {
+    if (!feedback_enabled(DM_FEEDBACK_BASIC)) {
+        data->state = DM_STATE_IDLE;
+        save_slot(data, slot_idx);
+        return;
+    }
+
     data->status_mode = false;
     fb_reset(data);
     fb_append_str(data, "[DM SAVED ");
     fb_append_char(data, slot_storage_prefix(slot_idx));
     fb_append_number(data, slot_idx);
-    fb_append_str(data, ": '");
-    render_slot_contents(data, slot);
-    fb_append_str(data, "']");
+    if (feedback_enabled(DM_FEEDBACK_VERBOSE)) {
+        fb_append_str(data, ": '");
+        render_slot_contents(data, slot);
+        fb_append_str(data, "'");
+    }
+    fb_append_char(data, ']');
     start_feedback(data, DM_STATE_IDLE, slot_idx);
 }
 
 static void feedback_slot_full(struct behavior_dynamic_macro_data *data, int slot_idx) {
+    if (!feedback_enabled(DM_FEEDBACK_BASIC)) {
+        data->state = DM_STATE_PENDING_ASSIGN;
+        k_work_reschedule(&data->assign_timeout_work,
+                          K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+        return;
+    }
+
     data->status_mode = false;
     fb_reset(data);
     fb_append_str(data, "[DM SLOT ");
@@ -583,6 +620,11 @@ static void feedback_slot_full(struct behavior_dynamic_macro_data *data, int slo
 }
 
 static void feedback_deleted(struct behavior_dynamic_macro_data *data, int slot_idx) {
+    if (!feedback_enabled(DM_FEEDBACK_BASIC)) {
+        data->state = DM_STATE_IDLE;
+        return;
+    }
+
     data->status_mode = false;
     fb_reset(data);
     fb_append_str(data, "[DM DEL ");
@@ -593,6 +635,11 @@ static void feedback_deleted(struct behavior_dynamic_macro_data *data, int slot_
 }
 
 static void feedback_delete_failed(struct behavior_dynamic_macro_data *data, int slot_idx) {
+    if (!feedback_enabled(DM_FEEDBACK_ERROR)) {
+        data->state = DM_STATE_IDLE;
+        return;
+    }
+
     data->status_mode = false;
     fb_reset(data);
     fb_append_str(data, "[DM DEL ");
@@ -603,6 +650,11 @@ static void feedback_delete_failed(struct behavior_dynamic_macro_data *data, int
 }
 
 static void feedback_slot_empty(struct behavior_dynamic_macro_data *data, int slot_idx) {
+    if (!feedback_enabled(DM_FEEDBACK_BASIC)) {
+        data->state = DM_STATE_IDLE;
+        return;
+    }
+
     data->status_mode = false;
     fb_reset(data);
     fb_append_str(data, "[DM SLOT ");
@@ -613,6 +665,13 @@ static void feedback_slot_empty(struct behavior_dynamic_macro_data *data, int sl
 }
 
 static void feedback_overflow(struct behavior_dynamic_macro_data *data) {
+    if (!feedback_enabled(DM_FEEDBACK_ERROR)) {
+        data->state = DM_STATE_PENDING_ASSIGN;
+        k_work_reschedule(&data->assign_timeout_work,
+                          K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+        return;
+    }
+
     data->status_mode = false;
     fb_reset(data);
     fb_append_str(data, "[DM FULL]");
@@ -620,7 +679,12 @@ static void feedback_overflow(struct behavior_dynamic_macro_data *data) {
 }
 
 static void feedback_status(struct behavior_dynamic_macro_data *data) {
-    data->status_mode = true;
+    if (!feedback_enabled(DM_FEEDBACK_BASIC)) {
+        data->state = DM_STATE_IDLE;
+        return;
+    }
+
+    data->status_mode = feedback_enabled(DM_FEEDBACK_VERBOSE);
     data->status_next_slot = 1;
     fb_reset(data);
     fb_append_str(data, "[DM ");
@@ -640,11 +704,13 @@ static void feedback_status(struct behavior_dynamic_macro_data *data) {
         fb_append_str(data, " NVS");
     }
     fb_append_str(data, "]\n");
-    render_status_slot(data, 0);
+    if (feedback_enabled(DM_FEEDBACK_VERBOSE)) {
+        render_status_slot(data, 0);
+    }
     start_feedback(data, DM_STATE_IDLE, -1);
 }
 
-#else /* !CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK */
+#else /* DM_FEEDBACK_LEVEL == DM_FEEDBACK_OFF */
 
 static void feedback_rec(struct behavior_dynamic_macro_data *data) { data->state = DM_STATE_RECORDING; }
 static void feedback_stop(struct behavior_dynamic_macro_data *data) {
@@ -683,7 +749,7 @@ static void feedback_overflow(struct behavior_dynamic_macro_data *data) {
 }
 static void feedback_status(struct behavior_dynamic_macro_data *data) { data->state = DM_STATE_IDLE; }
 
-#endif /* CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK */
+#endif /* DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF */
 
 /* -------------------------------------------------------------------------- */
 /*  NVS Persistence                                                           */
@@ -1150,7 +1216,7 @@ static int behavior_dynamic_macro_init(const struct device *dev) {
     k_work_init_delayable(&data->assign_timeout_work, assign_timeout_handler);
     k_work_init(&data->playback_work, playback_work_handler);
     k_timer_init(&data->playback_timer, playback_timer_handler, NULL);
-#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK)
+#if DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF
     k_work_init(&data->feedback_work, feedback_work_handler);
     k_timer_init(&data->feedback_timer, feedback_timer_handler, NULL);
     data->feedback_post_save_slot = -1;
