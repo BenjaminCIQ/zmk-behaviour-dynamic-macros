@@ -237,10 +237,6 @@ static void fb_append_number(int n) {
 
 /* Macro preview rendering: literal text stays literal; actions become <TOKENS>. */
 
-static bool is_modifier_keycode(uint32_t keycode) {
-    return keycode >= 0xE0 && keycode <= 0xE7;
-}
-
 static bool printable_char_for_keycode(uint32_t keycode, bool shifted, char *out) {
     if (keycode >= 0x04 && keycode <= 0x1D) {
         *out = (shifted ? 'A' : 'a') + (keycode - 0x04);
@@ -329,10 +325,10 @@ static const char *keyboard_action_name(uint32_t keycode) {
 }
 
 static const char *action_name(uint16_t usage_page, uint32_t keycode) {
-    if (usage_page == 0x07) {
+    if (usage_page == HID_USAGE_KEY) {
         return keyboard_action_name(keycode);
     }
-    if (usage_page == 0x09) {
+    if (usage_page == HID_USAGE_BUTTON) {
         switch (keycode) {
         case 0x01: return "MOUSE_LEFT";
         case 0x02: return "MOUSE_RIGHT";
@@ -342,7 +338,7 @@ static const char *action_name(uint16_t usage_page, uint32_t keycode) {
         default:   return "MOUSE";
         }
     }
-    if (usage_page == 0x0C) {
+    if (usage_page == HID_USAGE_CONSUMER) {
         return "MEDIA";
     }
     return "ACTION";
@@ -382,7 +378,7 @@ static void render_slot_contents(const struct dm_slot *slot) {
     for (uint32_t i = 0; i < slot->event_count; i++) {
         const struct dm_event *ev = &slot->events[i];
 
-        if (ev->usage_page == 0x07 && is_modifier_keycode(ev->keycode)) {
+        if (is_mod(ev->usage_page, ev->keycode)) {
             uint8_t mod_bit = 1 << (ev->keycode - 0xE0);
             if (ev->pressed) {
                 active_mods |= mod_bit;
@@ -400,7 +396,7 @@ static void render_slot_contents(const struct dm_slot *slot) {
         bool shifted = (mods & shift_mods) != 0;
         char output;
 
-        if (ev->usage_page == 0x07 && (mods & non_shift_mods) == 0 &&
+        if (ev->usage_page == HID_USAGE_KEY && (mods & non_shift_mods) == 0 &&
             printable_char_for_keycode(ev->keycode, shifted, &output)) {
             fb_append_char(output);
         } else {
@@ -478,7 +474,7 @@ static void feedback_work_handler(struct k_work *work) {
 
     const struct fb_event *ev = &feedback_buf[feedback_pos];
     struct zmk_keycode_state_changed kc = {
-        .usage_page = 0x07,
+        .usage_page = HID_USAGE_KEY,
         .keycode = ev->keycode,
         .implicit_modifiers = ev->mods,
         .explicit_modifiers = 0,
@@ -746,6 +742,10 @@ static void delete_slot_from_storage(int slot_idx) {}
 static struct k_timer playback_timer;
 static struct k_work playback_work;
 
+/*
+ * Dynamic macros record HID keycode events, not behavior bindings. Playback
+ * raises the same raw events intentionally instead of using behavior_queue.
+ */
 static void playback_work_handler(struct k_work *work) {
     if (dm.state != DM_STATE_PLAYING || dm.playback_slot < 0) {
         return;
