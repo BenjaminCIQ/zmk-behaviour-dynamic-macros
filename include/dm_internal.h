@@ -108,6 +108,10 @@ struct behavior_dynamic_macro_data {
     int feedback_post_save_slot;
     bool status_mode;
     int status_next_slot;
+    const struct dm_slot *preview_slot;
+    uint32_t preview_event_idx;
+    uint8_t preview_active_mods;
+    bool preview_in_token;
 #endif
 };
 

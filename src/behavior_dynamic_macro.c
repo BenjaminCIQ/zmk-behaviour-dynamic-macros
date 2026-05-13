@@ -549,6 +549,21 @@ static const char *action_name(uint16_t usage_page, uint32_t keycode) {
     return "ACTION";
 }
 
+#define MOD_SHIFT_MASK (0x02 | 0x20)
+#define MOD_NON_SHIFT_MASK (~MOD_SHIFT_MASK & 0xFF)
+
+static bool is_replayable_event(const struct dm_event *ev, uint8_t active_mods) {
+    if (ev->usage_page != HID_USAGE_KEY) {
+        return false;
+    }
+    uint8_t mods = active_mods | ev->implicit_mods | ev->explicit_mods;
+    if (mods & MOD_NON_SHIFT_MASK) {
+        return false;
+    }
+    char dummy;
+    return printable_char_for_keycode(ev->keycode, (mods & MOD_SHIFT_MASK) != 0, &dummy);
+}
+
 static bool render_modifiers(struct behavior_dynamic_macro_data *data, uint8_t mods) {
     static const uint8_t mod_bits[] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
     static const char *mod_names[] = {"LCTL", "LSFT", "LALT", "LGUI",
@@ -590,8 +605,6 @@ static void render_action_token(struct behavior_dynamic_macro_data *data, uint8_
 
 static void render_slot_contents(struct behavior_dynamic_macro_data *data,
                                  const struct dm_slot *slot) {
-    const uint8_t shift_mods = 0x02 | 0x20;
-    const uint8_t non_shift_mods = 0xFF & ~shift_mods;
     uint8_t active_mods = 0;
 
     for (uint32_t i = 0; i < slot->event_count; i++) {
@@ -612,12 +625,12 @@ static void render_slot_contents(struct behavior_dynamic_macro_data *data,
         }
 
         uint8_t mods = active_mods | ev->implicit_mods | ev->explicit_mods;
-        bool shifted = (mods & shift_mods) != 0;
         char output;
 
-        if (ev->usage_page == HID_USAGE_KEY && (mods & non_shift_mods) == 0 &&
-            printable_char_for_keycode(ev->keycode, shifted, &output)) {
-            fb_append_char(data, output);
+        if (is_replayable_event(ev, active_mods) &&
+            printable_char_for_keycode(ev->keycode, (mods & MOD_SHIFT_MASK) != 0, &output)) {
+            uint8_t emit_mods = (mods & MOD_SHIFT_MASK) ? 0x02 : 0x00;
+            fb_append_hid(data, ev->keycode, emit_mods);
         } else {
             render_action_token(data, mods, ev->usage_page, ev->keycode);
         }
