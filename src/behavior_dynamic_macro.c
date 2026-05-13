@@ -1056,11 +1056,40 @@ static void feedback_chain_no_room(struct behavior_dynamic_macro_data *data, int
 
 #else /* DM_FEEDBACK_LEVEL == DM_FEEDBACK_OFF */
 
-static void feedback_rec(struct behavior_dynamic_macro_data *data) { data->state = DM_STATE_RECORDING; }
+/*
+ * Feedback OFF stubs - state transitions without typed output
+ *
+ * Function                      | Next State           | Side Effects
+ * ------------------------------|----------------------|---------------------------
+ * feedback_rec                  | RECORDING            |
+ * feedback_stop                 | PENDING_ASSIGN       | reschedule timeout
+ * feedback_saved                | IDLE                 | save_slot()
+ * feedback_slot_full            | keep/PENDING_ASSIGN  | reschedule timeout
+ * feedback_deleted              | IDLE                 |
+ * feedback_delete_failed        | IDLE                 |
+ * feedback_save_failed          | (no change)          |
+ * feedback_save_queue_full      | (no change)          |
+ * feedback_delete_queue_full    | IDLE                 |
+ * feedback_slot_empty           | IDLE or keep MOVE    | reschedule if MOVE_PENDING
+ * feedback_overflow             | PENDING_ASSIGN       | reschedule timeout
+ * feedback_status               | IDLE                 |
+ * feedback_move_prompt          | MOVE_PENDING         |
+ * feedback_move_source_selected | MOVE_PENDING         |
+ * feedback_moved                | IDLE                 |
+ * feedback_move_cancelled       | IDLE                 |
+ * feedback_chain_insert         | RECORDING            |
+ * feedback_chain_empty          | RECORDING            |
+ * feedback_chain_no_room        | RECORDING            |
+ */
+
+#define ASSIGN_TIMEOUT K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT)
+
+static void feedback_rec(struct behavior_dynamic_macro_data *data) {
+    data->state = DM_STATE_RECORDING;
+}
 static void feedback_stop(struct behavior_dynamic_macro_data *data) {
     data->state = DM_STATE_PENDING_ASSIGN;
-    k_work_reschedule(&data->assign_timeout_work,
-                      K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+    k_work_reschedule(&data->assign_timeout_work, ASSIGN_TIMEOUT);
 }
 static void feedback_saved(struct behavior_dynamic_macro_data *data, int slot_idx,
                            const struct dm_slot *slot) {
@@ -1070,10 +1099,10 @@ static void feedback_saved(struct behavior_dynamic_macro_data *data, int slot_id
 }
 static void feedback_slot_full(struct behavior_dynamic_macro_data *data, int slot_idx) {
     (void)slot_idx;
-    data->state =
-        data->state == DM_STATE_MOVE_PENDING ? DM_STATE_MOVE_PENDING : DM_STATE_PENDING_ASSIGN;
-    k_work_reschedule(&data->assign_timeout_work,
-                      K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+    if (data->state != DM_STATE_MOVE_PENDING) {
+        data->state = DM_STATE_PENDING_ASSIGN;
+    }
+    k_work_reschedule(&data->assign_timeout_work, ASSIGN_TIMEOUT);
 }
 static void feedback_deleted(struct behavior_dynamic_macro_data *data, int slot_idx) {
     (void)slot_idx;
@@ -1098,18 +1127,18 @@ static void feedback_delete_queue_full(struct behavior_dynamic_macro_data *data,
 static void feedback_slot_empty(struct behavior_dynamic_macro_data *data, int slot_idx) {
     (void)slot_idx;
     if (data->state == DM_STATE_MOVE_PENDING) {
-        k_work_reschedule(&data->assign_timeout_work,
-                          K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+        k_work_reschedule(&data->assign_timeout_work, ASSIGN_TIMEOUT);
         return;
     }
     data->state = DM_STATE_IDLE;
 }
 static void feedback_overflow(struct behavior_dynamic_macro_data *data) {
     data->state = DM_STATE_PENDING_ASSIGN;
-    k_work_reschedule(&data->assign_timeout_work,
-                      K_MSEC(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_ASSIGN_TIMEOUT));
+    k_work_reschedule(&data->assign_timeout_work, ASSIGN_TIMEOUT);
 }
-static void feedback_status(struct behavior_dynamic_macro_data *data) { data->state = DM_STATE_IDLE; }
+static void feedback_status(struct behavior_dynamic_macro_data *data) {
+    data->state = DM_STATE_IDLE;
+}
 static void feedback_move_prompt(struct behavior_dynamic_macro_data *data) {
     data->state = DM_STATE_MOVE_PENDING;
 }
@@ -1139,6 +1168,8 @@ static void feedback_chain_no_room(struct behavior_dynamic_macro_data *data, int
     (void)slot_idx;
     data->state = DM_STATE_RECORDING;
 }
+
+#undef ASSIGN_TIMEOUT
 
 #endif /* DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF */
 
