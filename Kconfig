@@ -95,4 +95,39 @@ config ZMK_BEHAVIOR_DYNAMIC_MACRO_LOCALE
     default 3 if ZMK_BEHAVIOR_DYNAMIC_MACRO_LOCALE_FR
     default 0
 
+choice ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_DETAIL_CHOICE
+    prompt "Status key output detail"
+    default ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_FULL if ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK_VERBOSE
+    default ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_USED_PREVIEW if ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK_BASIC
+    default ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_USED if ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK_ERROR
+    default ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_OFF
+    help
+      Controls output detail when pressing the STATUS key. Defaults follow
+      feedback level but can be overridden independently.
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_OFF
+    bool "Off (no status output)"
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_COUNT
+    bool "Count only (filled/total)"
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_USED
+    bool "Used slots (no preview)"
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_USED_PREVIEW
+    bool "Used slots with preview"
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_FULL
+    bool "Full listing (all slots)"
+
+endchoice
+
+config ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_DETAIL
+    int
+    default 0 if ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_OFF
+    default 1 if ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_COUNT
+    default 2 if ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_USED
+    default 3 if ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_USED_PREVIEW
+    default 4 if ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_FULL
+
 endif

@@ -210,7 +210,7 @@ static char slot_storage_prefix(int slot_idx) {
 /*  Feedback: text output via simulated keystrokes                            */
 /* -------------------------------------------------------------------------- */
 
-#if DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF
+#if DM_TYPING_ENABLED
 
 struct hid_keycode {
     uint8_t keycode;
@@ -219,6 +219,10 @@ struct hid_keycode {
 
 static bool feedback_enabled(int level) {
     return DM_FEEDBACK_LEVEL >= level;
+}
+
+static bool status_enabled(int level) {
+    return DM_STATUS_DETAIL >= level;
 }
 
 static struct hid_keycode letter_to_hid(char c, bool upper) {
@@ -632,7 +636,8 @@ static int filled_slot_count(struct behavior_dynamic_macro_data *data) {
     return filled;
 }
 
-static void render_status_slot(struct behavior_dynamic_macro_data *data, int slot_idx) {
+static void render_status_slot(struct behavior_dynamic_macro_data *data, int slot_idx,
+                               bool show_preview) {
     fb_append_char(data, slot_storage_prefix(slot_idx));
     fb_append_number(data, slot_idx);
 #if DM_LOCALE_PLAIN
@@ -647,20 +652,25 @@ static void render_status_slot(struct behavior_dynamic_macro_data *data, int slo
         fb_append_char(data, '-');
 #endif
     } else {
+        if (show_preview) {
 #if !DM_LOCALE_PLAIN
-        fb_append_char(data, '\'');
+            fb_append_char(data, '\'');
 #endif
-        render_slot_contents(data, &data->slots[slot_idx]);
+            render_slot_contents(data, &data->slots[slot_idx]);
 #if DM_LOCALE_PLAIN
-        fb_append_char(data, ' ');
+            fb_append_char(data, ' ');
 #else
-        fb_append_str(data, "' (");
+            fb_append_str(data, "' (");
 #endif
-        fb_append_number(data, data->slots[slot_idx].event_count);
+        }
 #if DM_LOCALE_PLAIN
+        fb_append_number(data, data->slots[slot_idx].event_count);
         fb_append_str(data, " EVENTS");
 #else
-        fb_append_char(data, ')');
+        fb_append_number(data, data->slots[slot_idx].event_count);
+        if (show_preview) {
+            fb_append_char(data, ')');
+        }
 #endif
     }
     fb_append_char(data, '\n');
@@ -668,11 +678,23 @@ static void render_status_slot(struct behavior_dynamic_macro_data *data, int slo
 
 static void feedback_complete(struct behavior_dynamic_macro_data *data) {
     if (data->status_mode && data->status_next_slot < MAX_SLOTS) {
-        fb_reset(data);
-        render_status_slot(data, data->status_next_slot);
-        data->status_next_slot++;
-        k_timer_start(&data->emit_timer, K_NO_WAIT, K_NO_WAIT);
-        return;
+        bool show_preview = status_enabled(DM_STATUS_USED_PREVIEW);
+        bool show_all = status_enabled(DM_STATUS_FULL);
+
+        while (data->status_next_slot < MAX_SLOTS) {
+            if (show_all || !slot_is_empty(data, data->status_next_slot)) {
+                break;
+            }
+            data->status_next_slot++;
+        }
+
+        if (data->status_next_slot < MAX_SLOTS) {
+            fb_reset(data);
+            render_status_slot(data, data->status_next_slot, show_preview);
+            data->status_next_slot++;
+            k_timer_start(&data->emit_timer, K_NO_WAIT, K_NO_WAIT);
+            return;
+        }
     }
 
     data->status_mode = false;
@@ -905,12 +927,12 @@ static void feedback_overflow(struct behavior_dynamic_macro_data *data) {
 }
 
 static void feedback_status(struct behavior_dynamic_macro_data *data) {
-    if (!feedback_enabled(DM_FEEDBACK_BASIC)) {
+    if (!status_enabled(DM_STATUS_COUNT)) {
         data->state = DM_STATE_IDLE;
         return;
     }
 
-    data->status_mode = feedback_enabled(DM_FEEDBACK_VERBOSE) && MAX_SLOTS > 0;
+    data->status_mode = status_enabled(DM_STATUS_USED) && MAX_SLOTS > 0;
     data->status_next_slot = 1;
     fb_reset(data);
 #if DM_LOCALE_PLAIN
@@ -957,7 +979,11 @@ static void feedback_status(struct behavior_dynamic_macro_data *data) {
     fb_append_char(data, '\n');
 #endif
     if (data->status_mode) {
-        render_status_slot(data, 0);
+        bool show_preview = status_enabled(DM_STATUS_USED_PREVIEW);
+        bool show_all = status_enabled(DM_STATUS_FULL);
+        if (show_all || !slot_is_empty(data, 0)) {
+            render_status_slot(data, 0, show_preview);
+        }
     }
     start_feedback(data, DM_STATE_IDLE, -1);
 }
@@ -1067,7 +1093,7 @@ static void feedback_chain_no_room(struct behavior_dynamic_macro_data *data, int
     start_feedback(data, DM_STATE_RECORDING, -1);
 }
 
-#else /* DM_FEEDBACK_LEVEL == DM_FEEDBACK_OFF */
+#else /* !DM_TYPING_ENABLED */
 
 /*
  * Feedback OFF stubs - state transitions without typed output
@@ -1184,7 +1210,7 @@ static void feedback_chain_no_room(struct behavior_dynamic_macro_data *data, int
 
 #undef ASSIGN_TIMEOUT
 
-#endif /* DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF */
+#endif /* DM_TYPING_ENABLED */
 
 /* -------------------------------------------------------------------------- */
 /*  NVS Persistence                                                           */
@@ -1264,7 +1290,7 @@ static void emit_work_handler(struct k_work *work) {
         return;
     }
 
-#if DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF
+#if DM_TYPING_ENABLED
     if (data->state == DM_STATE_TYPING_FEEDBACK) {
         if (data->feedback_pos >= data->feedback_len) {
             feedback_complete(data);
@@ -1637,7 +1663,7 @@ static int behavior_dynamic_macro_init(const struct device *dev) {
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_PERSIST)
     dm_storage_init();
 #endif
-#if DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF
+#if DM_TYPING_ENABLED
     data->feedback_post_save_slot = -1;
 #endif
 

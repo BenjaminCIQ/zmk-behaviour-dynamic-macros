@@ -28,11 +28,20 @@
 #define DM_FEEDBACK_VERBOSE 3
 #define DM_FEEDBACK_LEVEL   CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_FEEDBACK_LEVEL
 
+#define DM_STATUS_OFF          0
+#define DM_STATUS_COUNT        1
+#define DM_STATUS_USED         2
+#define DM_STATUS_USED_PREVIEW 3
+#define DM_STATUS_FULL         4
+#define DM_STATUS_DETAIL       CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_STATUS_DETAIL
+
+#define DM_TYPING_ENABLED (DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF || DM_STATUS_DETAIL > DM_STATUS_OFF)
+
 #define DM_LOCALE_US 0
 #define DM_LOCALE_UK 1
 #define DM_LOCALE_DE 2
 #define DM_LOCALE_FR 3
-#if DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF
+#if DM_TYPING_ENABLED
 #define DM_LOCALE CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_LOCALE
 #else
 #define DM_LOCALE DM_LOCALE_US
@@ -63,7 +72,7 @@ struct dm_slot {
     struct dm_event events[MAX_EVENTS];
 };
 
-#if DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF
+#if DM_TYPING_ENABLED
 #define FEEDBACK_BUF_LEN 512
 
 struct fb_event {
@@ -90,7 +99,7 @@ struct behavior_dynamic_macro_data {
     struct k_timer emit_timer;
     struct k_work emit_work;
     bool suppress_recording;
-#if DM_FEEDBACK_LEVEL > DM_FEEDBACK_OFF
+#if DM_TYPING_ENABLED
     struct fb_event feedback_buf[FEEDBACK_BUF_LEN];
     int feedback_len;
     int feedback_pos;
