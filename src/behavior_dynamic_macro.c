@@ -121,6 +121,16 @@ struct dm_event {
 
 BUILD_ASSERT(sizeof(struct dm_event) == 8, "dm_event must be 8 bytes packed");
 
+#define DM_STORAGE_VERSION 1
+
+struct dm_slot_header {
+    uint8_t version;
+    uint8_t _reserved[3];
+    uint32_t event_count;
+} __packed;
+
+BUILD_ASSERT(sizeof(struct dm_slot_header) == 8, "dm_slot_header must be 8 bytes packed");
+
 struct dm_slot {
     uint32_t event_count;
     struct dm_event events[MAX_EVENTS];
@@ -1173,14 +1183,25 @@ static void settings_slot_key(struct behavior_dynamic_macro_data *data, int slot
 
 static void dm_storage_work_handler(struct k_work *work) {
     static struct dm_storage_op op;
+    static uint8_t save_buf[sizeof(struct dm_slot_header) + MAX_EVENTS * sizeof(struct dm_event)];
 
     while (k_msgq_get(&dm_storage_msgq, &op, K_NO_WAIT) == 0) {
         char key[64];
         settings_slot_key(op.data, op.slot_idx, key, sizeof(key));
 
         if (op.type == DM_STORAGE_OP_SAVE) {
-            size_t data_size = sizeof(uint32_t) + op.slot.event_count * sizeof(struct dm_event);
-            int rc = settings_save_one(key, &op.slot, data_size);
+            struct dm_slot_header *header = (struct dm_slot_header *)save_buf;
+            header->version = DM_STORAGE_VERSION;
+            header->_reserved[0] = 0;
+            header->_reserved[1] = 0;
+            header->_reserved[2] = 0;
+            header->event_count = op.slot.event_count;
+
+            size_t events_size = op.slot.event_count * sizeof(struct dm_event);
+            memcpy(save_buf + sizeof(struct dm_slot_header), op.slot.events, events_size);
+
+            size_t data_size = sizeof(struct dm_slot_header) + events_size;
+            int rc = settings_save_one(key, save_buf, data_size);
             if (rc) {
                 LOG_ERR("Failed to save dynamic macro slot %d: %d", op.slot_idx, rc);
                 feedback_save_failed(op.data, op.slot_idx);
@@ -1315,40 +1336,47 @@ static int dm_settings_set(const char *name, size_t len, settings_read_cb read_c
         return 0;
     }
 
-    if (len < sizeof(uint32_t)) {
-        LOG_WRN("Slot %d: stored length %zu too small", slot_idx, len);
+    if (len < sizeof(struct dm_slot_header)) {
+        LOG_WRN("Slot %d: stored length %zu too small for header", slot_idx, len);
+        return -EINVAL;
+    }
+
+    struct dm_slot_header header;
+    int rc = read_cb(cb_arg, &header, sizeof(header));
+    if (rc < (int)sizeof(header)) {
+        LOG_WRN("Slot %d: header read failed: %d", slot_idx, rc);
+        return -EINVAL;
+    }
+
+    if (header.version != DM_STORAGE_VERSION) {
+        LOG_WRN("Slot %d: unknown storage version %u, clearing", slot_idx, header.version);
+        return 0;
+    }
+
+    if (header.event_count > MAX_EVENTS) {
+        LOG_WRN("Slot %d: event_count %u exceeds MAX_EVENTS", slot_idx,
+                (unsigned int)header.event_count);
+        return -EINVAL;
+    }
+
+    size_t events_size = header.event_count * sizeof(struct dm_event);
+    size_t expected = sizeof(header) + events_size;
+    if (len < expected) {
+        LOG_WRN("Slot %d: expected %zu bytes for %u events, got len=%zu",
+                slot_idx, expected, (unsigned int)header.event_count, len);
         return -EINVAL;
     }
 
     memset(&data->slots[slot_idx], 0, sizeof(struct dm_slot));
+    data->slots[slot_idx].event_count = header.event_count;
 
-    int rc = read_cb(cb_arg, &data->slots[slot_idx], sizeof(struct dm_slot));
-    if (rc < 0) {
-        LOG_WRN("Slot %d: read failed: %d", slot_idx, rc);
-        memset(&data->slots[slot_idx], 0, sizeof(struct dm_slot));
-        return rc;
-    }
-
-    if (rc < (int)sizeof(uint32_t)) {
-        LOG_WRN("Slot %d: read returned %d bytes", slot_idx, rc);
-        memset(&data->slots[slot_idx], 0, sizeof(struct dm_slot));
-        return -EINVAL;
-    }
-
-    if (data->slots[slot_idx].event_count > MAX_EVENTS) {
-        LOG_WRN("Slot %d: event_count %u exceeds MAX_EVENTS", slot_idx,
-                (unsigned int)data->slots[slot_idx].event_count);
-        memset(&data->slots[slot_idx], 0, sizeof(struct dm_slot));
-        return -EINVAL;
-    }
-
-    size_t expected = sizeof(uint32_t) +
-                      data->slots[slot_idx].event_count * sizeof(struct dm_event);
-    if (len < expected || rc < (int)expected) {
-        LOG_WRN("Slot %d: expected %zu bytes for %u events, got len=%zu rc=%d",
-                slot_idx, expected, (unsigned int)data->slots[slot_idx].event_count, len, rc);
-        memset(&data->slots[slot_idx], 0, sizeof(struct dm_slot));
-        return -EINVAL;
+    if (header.event_count > 0) {
+        rc = read_cb(cb_arg, data->slots[slot_idx].events, events_size);
+        if (rc < (int)events_size) {
+            LOG_WRN("Slot %d: events read failed: %d", slot_idx, rc);
+            memset(&data->slots[slot_idx], 0, sizeof(struct dm_slot));
+            return -EINVAL;
+        }
     }
 
     LOG_DBG("Loaded dynamic macro slot %d with %u events", slot_idx,
@@ -1362,6 +1390,8 @@ static int dm_settings_commit(void) {
 
 static int dm_settings_export(int (*storage_func)(const char *name, const void *value,
                                                    size_t val_len)) {
+    static uint8_t export_buf[sizeof(struct dm_slot_header) + MAX_EVENTS * sizeof(struct dm_event)];
+
     for (size_t dev_idx = 0; dev_idx < ARRAY_SIZE(dm_devices); dev_idx++) {
         const struct device *dev = dm_devices[dev_idx];
         struct behavior_dynamic_macro_data *data = dev->data;
@@ -1373,9 +1403,19 @@ static int dm_settings_export(int (*storage_func)(const char *name, const void *
 
             char key[64];
             settings_slot_key(data, i, key, sizeof(key));
-            size_t data_size = sizeof(uint32_t) +
-                               data->slots[i].event_count * sizeof(struct dm_event);
-            int rc = storage_func(key, &data->slots[i], data_size);
+
+            struct dm_slot_header *header = (struct dm_slot_header *)export_buf;
+            header->version = DM_STORAGE_VERSION;
+            header->_reserved[0] = 0;
+            header->_reserved[1] = 0;
+            header->_reserved[2] = 0;
+            header->event_count = data->slots[i].event_count;
+
+            size_t events_size = data->slots[i].event_count * sizeof(struct dm_event);
+            memcpy(export_buf + sizeof(struct dm_slot_header), data->slots[i].events, events_size);
+
+            size_t data_size = sizeof(struct dm_slot_header) + events_size;
+            int rc = storage_func(key, export_buf, data_size);
             if (rc) {
                 return rc;
             }
