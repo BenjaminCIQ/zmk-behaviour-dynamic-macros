@@ -84,7 +84,7 @@ Chaining lets you build larger workflows from smaller recorded pieces.
 | Building blocks                                           | Compound recording                                                      | Use                                                               |
 | --------------------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | `N0: 'git add .<RET>'` and `N1: 'git commit -m ""<LEFT>'` | Record a new slot, press slot N0, press slot N1                         | Stage changes and start a commit message                          |
-| `N2: 'Hi Benjamin,<RET><RET>'`                            | Chain N2, then type a custom message, then chain an email sign-off slot | Reuse a greeting across multiple email templates                  |
+| `N2: 'Hi John,<RET><RET>'`                            | Chain N2, then type a custom message, then chain an email sign-off slot | Reuse a greeting across multiple email templates                  |
 | `R8: '<LCTL+S>'` and `R9: '<LCTL+W>'`                     | Chain R8 and R9 into one NVS slot                                       | Promote a temporary save-and-close workflow to a persistent macro |
 
 
