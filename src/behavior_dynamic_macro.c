@@ -12,6 +12,7 @@
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 #include <drivers/behavior.h>
 #include <zmk/behavior.h>
 #include <zmk/event_manager.h>
@@ -153,7 +154,7 @@ struct behavior_dynamic_macro_data {
     const struct device *dev;
     enum dm_state state;
     struct dm_slot slots[SLOT_CAPACITY];
-    bool pending_delete[SLOT_CAPACITY];
+    ATOMIC_DEFINE(pending_delete, SLOT_CAPACITY);
     uint32_t slot_generation[SLOT_CAPACITY];
     struct dm_slot recording_buffer;
     struct k_work_delayable assign_timeout_work;
@@ -305,7 +306,7 @@ static char slot_storage_prefix(int slot_idx) {
 }
 
 static bool slot_is_empty(struct behavior_dynamic_macro_data *data, int slot_idx) {
-    return data->slots[slot_idx].event_count == 0 || data->pending_delete[slot_idx];
+    return data->slots[slot_idx].event_count == 0 || atomic_test_bit(data->pending_delete, slot_idx);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1215,9 +1216,9 @@ static void dm_storage_work_handler(struct k_work *work) {
         int rc = settings_delete(key);
         if (rc) {
             LOG_ERR("Failed to delete dynamic macro slot %d from storage: %d", op.slot_idx, rc);
-            if (op.data->pending_delete[op.slot_idx] &&
+            if (atomic_test_bit(op.data->pending_delete, op.slot_idx) &&
                 op.data->slot_generation[op.slot_idx] == op.generation) {
-                op.data->pending_delete[op.slot_idx] = false;
+                atomic_clear_bit(op.data->pending_delete, op.slot_idx);
             }
             if (op.data->state == DM_STATE_IDLE) {
                 feedback_delete_failed(op.data, op.slot_idx);
@@ -1225,10 +1226,10 @@ static void dm_storage_work_handler(struct k_work *work) {
             continue;
         }
 
-        if (op.data->pending_delete[op.slot_idx] &&
+        if (atomic_test_bit(op.data->pending_delete, op.slot_idx) &&
             op.data->slot_generation[op.slot_idx] == op.generation) {
             memset(&op.data->slots[op.slot_idx], 0, sizeof(struct dm_slot));
-            op.data->pending_delete[op.slot_idx] = false;
+            atomic_clear_bit(op.data->pending_delete, op.slot_idx);
             if (op.data->state == DM_STATE_IDLE) {
                 feedback_deleted(op.data, op.slot_idx);
             }
@@ -1615,11 +1616,11 @@ static void cmd_slot(struct behavior_dynamic_macro_data *data, int slot_idx) {
 
     case DM_STATE_PENDING_ASSIGN:
         k_work_cancel_delayable(&data->assign_timeout_work);
-        if (data->slots[slot_idx].event_count > 0 && !data->pending_delete[slot_idx]) {
+        if (data->slots[slot_idx].event_count > 0 && !atomic_test_bit(data->pending_delete, slot_idx)) {
             feedback_slot_full(data, slot_idx);
             return;
         }
-        data->pending_delete[slot_idx] = false;
+        atomic_clear_bit(data->pending_delete, slot_idx);
         data->slot_generation[slot_idx]++;
         memcpy(&data->slots[slot_idx], &data->recording_buffer, sizeof(struct dm_slot));
         feedback_saved(data, slot_idx, &data->slots[slot_idx]);
@@ -1633,11 +1634,11 @@ static void cmd_slot(struct behavior_dynamic_macro_data *data, int slot_idx) {
             feedback_slot_empty(data, slot_idx);
         } else {
             if (slot_is_nvs(slot_idx)) {
-                data->pending_delete[slot_idx] = true;
+                atomic_set_bit(data->pending_delete, slot_idx);
                 data->state = DM_STATE_IDLE;
                 int rc = delete_slot_from_storage(data, slot_idx);
                 if (rc) {
-                    data->pending_delete[slot_idx] = false;
+                    atomic_clear_bit(data->pending_delete, slot_idx);
                     return;
                 }
 
@@ -1681,11 +1682,11 @@ static void cmd_slot(struct behavior_dynamic_macro_data *data, int slot_idx) {
         }
 
         k_work_cancel_delayable(&data->assign_timeout_work);
-        data->pending_delete[dst] = false;
+        atomic_clear_bit(data->pending_delete, dst);
         data->slot_generation[dst]++;
         memcpy(&data->slots[dst], &data->slots[src], sizeof(struct dm_slot));
 
-        data->pending_delete[src] = false;
+        atomic_clear_bit(data->pending_delete, src);
         data->slot_generation[src]++;
         memset(&data->slots[src], 0, sizeof(struct dm_slot));
 
