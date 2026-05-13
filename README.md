@@ -168,4 +168,4 @@ Runs on central half only. Both halves' keystrokes are captured during recording
 
 ## License
 
-MIT
+This module is released under the [MIT License](LICENSE).
