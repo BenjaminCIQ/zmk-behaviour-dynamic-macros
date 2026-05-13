@@ -122,7 +122,7 @@ struct dm_event {
 
 BUILD_ASSERT(sizeof(struct dm_event) == 8, "dm_event must be 8 bytes packed");
 
-#define DM_STORAGE_VERSION 1
+#define DM_STORAGE_VERSION 0xD1
 
 struct dm_slot_header {
     uint8_t version;
@@ -1192,10 +1192,12 @@ static void settings_slot_key(struct behavior_dynamic_macro_data *data, int slot
  * Thread safety:
  * - pending_delete uses atomic bit operations (safe across threads)
  * - slot_generation is only written by main thread, read here for staleness check
- * - slots[] are only written by main thread; this handler reads slot data via
- *   the op.slot copy in the message queue, never directly from data->slots[]
- * - On delete completion, we only clear the atomic flag; slot data is cleared
- *   lazily when reassigned (memcpy overwrites entire slot)
+ * - slots[] writes: main thread does memcpy on assign; this handler does memset
+ *   on delete completion. These don't race because pending_delete is set during
+ *   delete (main thread treats slot as empty and won't access it), and the
+ *   atomic_clear_bit happens after memset completes.
+ * - Save operations read slot data via op.slot copy in message queue, not
+ *   directly from data->slots[]
  */
 static void dm_storage_work_handler(struct k_work *work) {
     static struct dm_storage_op op;
@@ -1243,6 +1245,7 @@ static void dm_storage_work_handler(struct k_work *work) {
 
         if (atomic_test_bit(op.data->pending_delete, op.slot_idx) &&
             op.data->slot_generation[op.slot_idx] == op.generation) {
+            memset(&op.data->slots[op.slot_idx], 0, sizeof(struct dm_slot));
             atomic_clear_bit(op.data->pending_delete, op.slot_idx);
             if (op.data->state == DM_STATE_IDLE) {
                 feedback_deleted(op.data, op.slot_idx);
@@ -1364,7 +1367,10 @@ static int dm_settings_set(const char *name, size_t len, settings_read_cb read_c
     }
 
     if (header.version != DM_STORAGE_VERSION) {
-        LOG_WRN("Slot %d: unknown storage version %u, clearing", slot_idx, header.version);
+        LOG_WRN("Slot %d: unknown storage version 0x%02x, clearing", slot_idx, header.version);
+        char key[64];
+        settings_slot_key(data, slot_idx, key, sizeof(key));
+        settings_delete(key);
         return 0;
     }
 
