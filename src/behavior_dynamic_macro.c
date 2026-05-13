@@ -112,11 +112,14 @@ enum dm_state {
 
 struct dm_event {
     uint16_t usage_page;
-    uint32_t keycode;
+    uint16_t keycode;
     uint8_t implicit_mods;
     uint8_t explicit_mods;
-    bool pressed;
-};
+    uint8_t pressed;
+    uint8_t _reserved;
+} __packed;
+
+BUILD_ASSERT(sizeof(struct dm_event) == 8, "dm_event must be 8 bytes packed");
 
 struct dm_slot {
     uint32_t event_count;
@@ -1764,10 +1767,11 @@ static int dm_event_listener(const zmk_event_t *eh) {
 
         struct dm_event *rec = &data->recording_buffer.events[data->recording_buffer.event_count];
         rec->usage_page = ev->usage_page;
-        rec->keycode = ev->keycode;
+        rec->keycode = (uint16_t)ev->keycode;
         rec->implicit_mods = ev->implicit_modifiers;
         rec->explicit_mods = ev->explicit_modifiers;
         rec->pressed = ev->state;
+        rec->_reserved = 0;
         data->recording_buffer.event_count++;
 
         LOG_DBG("Recorded event %d/%d: page=0x%02x key=0x%02x %s",
