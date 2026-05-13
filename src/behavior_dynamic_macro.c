@@ -600,7 +600,7 @@ static const char *action_name(uint16_t usage_page, uint32_t keycode) {
 #define MOD_SHIFT_MASK (0x02 | 0x20)
 #define MOD_NON_SHIFT_MASK (~MOD_SHIFT_MASK & 0xFF)
 
-static bool is_mod(uint16_t usage_page, uint32_t keycode) {
+static bool is_modifier_key(uint16_t usage_page, uint32_t keycode) {
     return usage_page == HID_USAGE_KEY && keycode >= 0xE0 && keycode <= 0xE7;
 }
 
@@ -693,7 +693,7 @@ static bool render_slot_contents_stream(struct behavior_dynamic_macro_data *data
     while (data->preview_idx < slot->event_count) {
         const struct dm_event *ev = &slot->events[data->preview_idx];
 
-        if (is_mod(ev->usage_page, ev->keycode)) {
+        if (is_modifier_key(ev->usage_page, ev->keycode)) {
             uint8_t mod_bit = 1 << (ev->keycode - 0xE0);
             if (ev->pressed) {
                 data->preview_mods |= mod_bit;
