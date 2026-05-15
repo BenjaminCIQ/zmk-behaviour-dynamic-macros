@@ -1507,6 +1507,7 @@ static void emit_work_handler(struct k_work *work) {
 
     if (data->state == DM_STATE_PLAYING) {
         if (data->playback_slot < 0) {
+            k_timer_stop(&data->emit_timer);
             return;
         }
 
@@ -1545,6 +1546,8 @@ static void emit_work_handler(struct k_work *work) {
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_EVENTS)
             raise_dm_state_changed(data, ZMK_DYNAMIC_MACRO_PLAY_FINISHED, finished_slot);
 #endif
+        } else {
+            k_timer_start(&data->emit_timer, K_MSEC(TAP_DELAY), K_NO_WAIT);
         }
         return;
     }
@@ -1824,7 +1827,7 @@ static void cmd_slot(struct behavior_dynamic_macro_data *data, int slot_idx) {
         raise_dm_state_changed(data, ZMK_DYNAMIC_MACRO_PLAY_STARTED, slot_idx);
 #endif
         LOG_DBG("Playing slot %d (%d events)", slot_idx, data->slots[slot_idx].event_count);
-        k_timer_start(&data->emit_timer, K_NO_WAIT, K_MSEC(TAP_DELAY));
+        k_timer_start(&data->emit_timer, K_NO_WAIT, K_NO_WAIT);
         break;
 
     default:
