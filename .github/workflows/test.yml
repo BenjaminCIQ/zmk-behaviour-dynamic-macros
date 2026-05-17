@@ -1,0 +1,20 @@
+name: Tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "dts/**"
+      - "include/**"
+      - "src/**"
+      - "tests/**"
+  pull_request:
+    paths:
+      - "dts/**"
+      - "include/**"
+      - "src/**"
+      - "tests/**"
+
+jobs:
+  test:
+    uses: urob/zmk-actions/.github/workflows/run-tests.yml@v11.0.2
