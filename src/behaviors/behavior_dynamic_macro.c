@@ -253,6 +253,38 @@ static int delete_slot_from_storage(struct behavior_dynamic_macro_data *data, in
 #endif /* CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_PERSIST */
 
 /* -------------------------------------------------------------------------- */
+/*  Event notification                                                        */
+/* -------------------------------------------------------------------------- */
+
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_DYNAMIC_MACRO_EVENTS)
+static void raise_dm_state_changed(struct behavior_dynamic_macro_data *data,
+                                   enum zmk_dynamic_macro_event_type event, int slot) {
+    enum zmk_dynamic_macro_state state;
+
+    switch (data->state) {
+    case DM_STATE_RECORDING:
+        state = ZMK_DYNAMIC_MACRO_STATE_RECORDING;
+        break;
+    case DM_STATE_PLAYING:
+        state = ZMK_DYNAMIC_MACRO_STATE_PLAYING;
+        break;
+    default:
+        state = ZMK_DYNAMIC_MACRO_STATE_IDLE;
+        break;
+    }
+
+    LOG_DBG("dm_event: type=%d slot=%d state=%d", event, slot, state);
+
+    raise_zmk_dynamic_macro_state_changed((struct zmk_dynamic_macro_state_changed){
+        .state = state,
+        .event = event,
+        .slot = slot,
+        .slot_is_nvs = slot >= 0 ? slot_is_nvs(slot) : false,
+    });
+}
+#endif
+
+/* -------------------------------------------------------------------------- */
 /*  Feedback: text output via simulated keystrokes                            */
 /* -------------------------------------------------------------------------- */
 
@@ -787,33 +819,6 @@ static int filled_ram_slot_count(struct behavior_dynamic_macro_data *data) {
 
     return filled;
 }
-
-static void raise_dm_state_changed(struct behavior_dynamic_macro_data *data,
-                                   enum zmk_dynamic_macro_event_type event, int slot) {
-    enum zmk_dynamic_macro_state state;
-
-    switch (data->state) {
-    case DM_STATE_RECORDING:
-        state = ZMK_DYNAMIC_MACRO_STATE_RECORDING;
-        break;
-    case DM_STATE_PLAYING:
-        state = ZMK_DYNAMIC_MACRO_STATE_PLAYING;
-        break;
-    default:
-        state = ZMK_DYNAMIC_MACRO_STATE_IDLE;
-        break;
-    }
-
-    LOG_DBG("dm_event: type=%d slot=%d state=%d", event, slot, state);
-
-    raise_zmk_dynamic_macro_state_changed((struct zmk_dynamic_macro_state_changed){
-        .state = state,
-        .event = event,
-        .slot = slot,
-        .slot_is_nvs = slot >= 0 ? slot_is_nvs(slot) : false,
-    });
-}
-#endif
 
 /*
  * Render status slot. For non-empty slots with preview, sets up streaming
@@ -2061,6 +2066,7 @@ int dm_get_preview_string(int slot_idx, char *buf, size_t len) {
         return 0;
     }
 
+#if DM_TYPING_ENABLED
     const struct dm_slot *slot = &data->slots[slot_idx];
     size_t pos = 0;
     uint8_t active_mods = 0;
@@ -2101,6 +2107,10 @@ int dm_get_preview_string(int slot_idx, char *buf, size_t len) {
 
     buf[pos] = '\0';
     return (int)pos;
+#else
+    int n = snprintf(buf, len, "(%u events)", data->slots[slot_idx].event_count);
+    return n < (int)len ? n : (int)len - 1;
+#endif
 }
 
 int dm_get_used_nvs_slots(void) {
