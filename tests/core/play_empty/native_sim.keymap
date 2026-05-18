@@ -1,0 +1,9 @@
+#include "../behavior_keymap.dtsi"
+
+&kscan {
+    events = <
+        /* SLOT_RAM 0 (play empty slot) */
+        ZMK_MOCK_PRESS(1,0,200)
+        ZMK_MOCK_RELEASE(1,0,10)
+    >;
+};

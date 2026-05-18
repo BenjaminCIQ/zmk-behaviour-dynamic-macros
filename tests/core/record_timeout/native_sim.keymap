@@ -1,0 +1,19 @@
+#include "../behavior_keymap.dtsi"
+
+&kscan {
+    events = <
+        /* REC */
+        ZMK_MOCK_PRESS(0,0,10)
+        ZMK_MOCK_RELEASE(0,0,10)
+        /* A (recorded) */
+        ZMK_MOCK_PRESS(3,0,10)
+        ZMK_MOCK_RELEASE(3,0,10)
+        /* STP */
+        ZMK_MOCK_PRESS(0,1,10)
+        ZMK_MOCK_RELEASE(0,1,1000)
+        /* wait 1000ms for 500ms assign timeout to expire */
+        /* SLOT_RAM 0 (play — slot empty because assign timed out) */
+        ZMK_MOCK_PRESS(1,0,200)
+        ZMK_MOCK_RELEASE(1,0,10)
+    >;
+};

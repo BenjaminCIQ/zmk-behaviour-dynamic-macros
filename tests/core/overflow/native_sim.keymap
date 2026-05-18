@@ -1,0 +1,24 @@
+#include "../behavior_keymap.dtsi"
+
+&kscan {
+    events = <
+        /* REC */
+        ZMK_MOCK_PRESS(0,0,10)
+        ZMK_MOCK_RELEASE(0,0,10)
+        /* A (events 1-2) */
+        ZMK_MOCK_PRESS(3,0,10)
+        ZMK_MOCK_RELEASE(3,0,10)
+        /* A (events 3-4, buffer full) */
+        ZMK_MOCK_PRESS(3,0,10)
+        ZMK_MOCK_RELEASE(3,0,10)
+        /* A (overflow: press not recorded, auto-transition to PENDING_ASSIGN) */
+        ZMK_MOCK_PRESS(3,0,10)
+        ZMK_MOCK_RELEASE(3,0,10)
+        /* SLOT_RAM 0 (assign 4 events) */
+        ZMK_MOCK_PRESS(1,0,10)
+        ZMK_MOCK_RELEASE(1,0,10)
+        /* SLOT_RAM 0 (play) */
+        ZMK_MOCK_PRESS(1,0,2000)
+        ZMK_MOCK_RELEASE(1,0,10)
+    >;
+};

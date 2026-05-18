@@ -11,7 +11,7 @@
 
     kscan: kscan {
         compatible = "zmk,kscan-mock";
-        rows = <2>;
+        rows = <3>;
         columns = <2>;
         exit-after;
     };
@@ -21,7 +21,8 @@
         default_layer {
             bindings = <
                 &dm DM_REC 0        &dm DM_STP 0
-                &dm DM_SLOT_RAM 0   &kp A
+                &dm DM_SLOT_RAM 0   &dm DM_SLOT_RAM 1
+                &kp A               &kp B
             >;
         };
     };

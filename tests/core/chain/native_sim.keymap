@@ -1,0 +1,36 @@
+#include "../behavior_keymap.dtsi"
+
+&kscan {
+    events = <
+        /* REC */
+        ZMK_MOCK_PRESS(0,0,10)
+        ZMK_MOCK_RELEASE(0,0,10)
+        /* A (recorded) */
+        ZMK_MOCK_PRESS(3,0,10)
+        ZMK_MOCK_RELEASE(3,0,10)
+        /* STP */
+        ZMK_MOCK_PRESS(0,1,10)
+        ZMK_MOCK_RELEASE(0,1,10)
+        /* SLOT_RAM 0 (assign) */
+        ZMK_MOCK_PRESS(1,0,10)
+        ZMK_MOCK_RELEASE(1,0,10)
+        /* REC (new recording) */
+        ZMK_MOCK_PRESS(0,0,10)
+        ZMK_MOCK_RELEASE(0,0,10)
+        /* SLOT_RAM 0 (chain slot 0 into recording) */
+        ZMK_MOCK_PRESS(1,0,10)
+        ZMK_MOCK_RELEASE(1,0,10)
+        /* B (recorded after chain) */
+        ZMK_MOCK_PRESS(3,1,10)
+        ZMK_MOCK_RELEASE(3,1,10)
+        /* STP */
+        ZMK_MOCK_PRESS(0,1,10)
+        ZMK_MOCK_RELEASE(0,1,10)
+        /* SLOT_RAM 1 (assign) */
+        ZMK_MOCK_PRESS(1,1,10)
+        ZMK_MOCK_RELEASE(1,1,10)
+        /* SLOT_RAM 1 (play: should emit A then B) */
+        ZMK_MOCK_PRESS(1,1,2000)
+        ZMK_MOCK_RELEASE(1,1,10)
+    >;
+};

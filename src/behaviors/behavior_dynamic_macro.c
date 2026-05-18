@@ -804,6 +804,8 @@ static void raise_dm_state_changed(struct behavior_dynamic_macro_data *data,
         break;
     }
 
+    LOG_DBG("dm_event: type=%d slot=%d state=%d", event, slot, state);
+
     raise_zmk_dynamic_macro_state_changed((struct zmk_dynamic_macro_state_changed){
         .state = state,
         .event = event,
