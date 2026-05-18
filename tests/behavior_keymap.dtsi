@@ -5,6 +5,17 @@
 #include <dt-bindings/zmk/dynamic_macros.h>
 
 / {
+    chosen {
+        zmk,kscan = &kscan;
+    };
+
+    kscan: kscan {
+        compatible = "zmk,kscan-mock";
+        rows = <2>;
+        columns = <2>;
+        exit-after;
+    };
+
     keymap {
         compatible = "zmk,keymap";
         default_layer {
