@@ -222,6 +222,7 @@ static bool parse_settings_slot_name(const char *name, struct behavior_dynamic_m
 }
 
 static int dm_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
+    static uint8_t load_buf[sizeof(struct dm_slot_header) + MAX_EVENTS * sizeof(struct dm_event)];
     struct behavior_dynamic_macro_data *data = NULL;
     int slot_idx = -1;
 
@@ -239,45 +240,47 @@ static int dm_settings_set(const char *name, size_t len, settings_read_cb read_c
         return -EINVAL;
     }
 
-    struct dm_slot_header header;
-    int rc = read_cb(cb_arg, &header, sizeof(header));
-    if (rc < (int)sizeof(header)) {
-        LOG_WRN("Slot %d: header read failed: %d", slot_idx, rc);
+    size_t read_len = len;
+    if (read_len > sizeof(load_buf)) {
+        read_len = sizeof(load_buf);
+    }
+
+    /* NVS read_cb does not track offset — read everything in one call */
+    int rc = read_cb(cb_arg, load_buf, read_len);
+    if (rc < (int)sizeof(struct dm_slot_header)) {
+        LOG_WRN("Slot %d: read failed: %d", slot_idx, rc);
         return -EINVAL;
     }
 
-    if (header.version != DM_STORAGE_VERSION) {
-        LOG_WRN("Slot %d: unknown storage version 0x%02x, clearing", slot_idx, header.version);
+    const struct dm_slot_header *header = (const struct dm_slot_header *)load_buf;
+
+    if (header->version != DM_STORAGE_VERSION) {
+        LOG_WRN("Slot %d: unknown storage version 0x%02x, clearing", slot_idx, header->version);
         char key[64];
         settings_slot_key(data, slot_idx, key, sizeof(key));
         settings_delete(key);
         return 0;
     }
 
-    if (header.event_count > MAX_EVENTS) {
+    if (header->event_count > MAX_EVENTS) {
         LOG_WRN("Slot %d: event_count %u exceeds MAX_EVENTS", slot_idx,
-                (unsigned int)header.event_count);
+                (unsigned int)header->event_count);
         return -EINVAL;
     }
 
-    size_t events_size = header.event_count * sizeof(struct dm_event);
-    size_t expected = sizeof(header) + events_size;
-    if (len < expected) {
-        LOG_WRN("Slot %d: expected %zu bytes for %u events, got len=%zu",
-                slot_idx, expected, (unsigned int)header.event_count, len);
+    size_t events_size = header->event_count * sizeof(struct dm_event);
+    size_t expected = sizeof(struct dm_slot_header) + events_size;
+    if ((size_t)rc < expected) {
+        LOG_WRN("Slot %d: expected %zu bytes for %u events, got %d",
+                slot_idx, expected, (unsigned int)header->event_count, rc);
         return -EINVAL;
     }
 
     memset(&data->slots[slot_idx], 0, sizeof(struct dm_slot));
-    data->slots[slot_idx].event_count = header.event_count;
+    data->slots[slot_idx].event_count = header->event_count;
 
-    if (header.event_count > 0) {
-        rc = read_cb(cb_arg, data->slots[slot_idx].events, events_size);
-        if (rc < (int)events_size) {
-            LOG_WRN("Slot %d: events read failed: %d", slot_idx, rc);
-            memset(&data->slots[slot_idx], 0, sizeof(struct dm_slot));
-            return -EINVAL;
-        }
+    if (header->event_count > 0) {
+        memcpy(data->slots[slot_idx].events, load_buf + sizeof(struct dm_slot_header), events_size);
     }
 
     LOG_DBG("Loaded dynamic macro slot %d with %u events", slot_idx,
